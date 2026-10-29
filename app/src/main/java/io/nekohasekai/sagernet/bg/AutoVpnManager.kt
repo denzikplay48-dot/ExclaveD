@@ -1489,28 +1489,44 @@ object AutoVpnManager {
     }
 
     private suspend fun hasDirectInternet(): Boolean {
-        return withTimeoutOrNull(DIRECT_NETWORK_CHECK_TIMEOUT_MS) {
-            val network = DefaultNetworkListener.get()
-            val capabilities = SagerNet.connectivity.getNetworkCapabilities(network)
-                ?: return@withTimeoutOrNull false
-            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                return@withTimeoutOrNull false
+        val listenerKey = Any()
+        val network = CompletableDeferred<Network?>()
+        var listenerStarted = false
+        return try {
+            DefaultNetworkListener.start(listenerKey) { available ->
+                if (available != null) network.complete(available)
             }
-
-            onIoDispatcher {
-                val connection = network.openConnection(URL(DIRECT_NETWORK_CHECK_URL)) as? HttpURLConnection
-                    ?: return@onIoDispatcher false
-                try {
-                    connection.instanceFollowRedirects = true
-                    connection.requestMethod = "HEAD"
-                    connection.connectTimeout = DIRECT_NETWORK_CONNECT_TIMEOUT_MS
-                    connection.readTimeout = DIRECT_NETWORK_READ_TIMEOUT_MS
-                    connection.responseCode in 200..399
-                } finally {
-                    connection.disconnect()
+            listenerStarted = true
+            withTimeoutOrNull(DIRECT_NETWORK_CHECK_TIMEOUT_MS) {
+                val directNetwork = network.await() ?: return@withTimeoutOrNull false
+                val capabilities = SagerNet.connectivity.getNetworkCapabilities(directNetwork)
+                    ?: return@withTimeoutOrNull false
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    return@withTimeoutOrNull false
                 }
-            }
-        } == true
+
+                onIoDispatcher {
+                    val connection = directNetwork.openConnection(URL(DIRECT_NETWORK_CHECK_URL)) as? HttpURLConnection
+                        ?: return@onIoDispatcher false
+                    try {
+                        connection.instanceFollowRedirects = true
+                        connection.requestMethod = "HEAD"
+                        connection.connectTimeout = DIRECT_NETWORK_CONNECT_TIMEOUT_MS
+                        connection.readTimeout = DIRECT_NETWORK_READ_TIMEOUT_MS
+                        connection.responseCode in 200..399
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+            } == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.warn("auto-vpn", "direct-network-check-failed", e)
+            false
+        } finally {
+            if (listenerStarted) runCatching { DefaultNetworkListener.stop(listenerKey) }
+        }
     }
 
     private fun startTrafficMonitor() {
