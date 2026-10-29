@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish APKs to the ExclaveD release channel
+        description: Publish the ExclaveD APK to the release channel
         required: true
         type: boolean
         default: true
@@ -52,7 +52,7 @@ jobs:
         run: |
           test -n "$RELEASE_KEYSTORE_BASE64" || { echo "Missing Actions secret: RELEASE_KEYSTORE_BASE64"; exit 1; }
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > release.keystore
-      - name: Build signed ExclaveD APKs
+      - name: Build signed ExclaveD APK
         env:
           KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
           ALIAS_NAME: ${{ secrets.ALIAS_NAME }}
@@ -62,14 +62,13 @@ jobs:
           test -n "$KEYSTORE_PASS" || { echo "Missing Actions secret: KEYSTORE_PASS"; exit 1; }
           test -n "$ALIAS_NAME" || { echo "Missing Actions secret: ALIAS_NAME"; exit 1; }
           test -n "$ALIAS_PASS" || { echo "Missing Actions secret: ALIAS_PASS"; exit 1; }
-          ./gradlew :app:updateAssets :app:assembleOssRelease :app:assembleLiteRelease
-      - name: Upload ExclaveD APKs
+          ./gradlew :app:updateAssets :app:assembleOssRelease
+      - name: Upload ExclaveD APK
         uses: actions/upload-artifact@v7
         with:
-          name: ExclaveD-APKs
+          name: ExclaveD-APK
           path: |
             app/build/outputs/apk/oss/release/*.apk
-            app/build/outputs/apk/lite/release/*.apk
           if-no-files-found: error
           retention-days: 30
   publish:
@@ -84,10 +83,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Download ExclaveD APKs
+      - name: Download ExclaveD APK
         uses: actions/download-artifact@v8
         with:
-          name: ExclaveD-APKs
+          name: ExclaveD-APK
           path: artifacts
       - name: Publish ExclaveD release
         env:
