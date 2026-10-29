@@ -119,6 +119,7 @@ class LiteActivity : ThemedActivity(), SagerConnection.Callback, AutoVpnManager.
 
     override fun onResume() {
         super.onResume()
+        AutoVpnManager.refreshNetworkStatus("lite-activity-resume")
         syncFloatingToggle()
         if (DataStore.autoVpnFloatingSwitchEnabled) {
             FloatingSwitchButton.sync(applicationContext)
@@ -495,7 +496,8 @@ class LiteActivity : ThemedActivity(), SagerConnection.Callback, AutoVpnManager.
         val detail = AutoVpnManager.cardStatusText(mode).takeIf {
             DataStore.autoVpnEnabled && (isConnected || isSearching) && it != primaryStatus
         }
-        binding.liteStatus.text = listOfNotNull(primaryStatus, detail, manualPingStatus)
+        val networkStatus = AutoVpnManager.networkStatusText().takeIf { detail == null }
+        binding.liteStatus.text = listOfNotNull(primaryStatus, detail, networkStatus, manualPingStatus)
             .filter { it.isNotBlank() }
             .distinct()
             .joinToString("\n")

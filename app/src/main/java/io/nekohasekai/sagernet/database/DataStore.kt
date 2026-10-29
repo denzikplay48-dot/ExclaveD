@@ -26,6 +26,7 @@ import android.os.Binder
 import android.os.Build
 import androidx.preference.PreferenceDataStore
 import io.nekohasekai.sagernet.*
+import io.nekohasekai.sagernet.bg.AutoVpnManager
 import io.nekohasekai.sagernet.bg.GroupSourceSyncer
 import io.nekohasekai.sagernet.bg.SubscriptionUpdater
 import io.nekohasekai.sagernet.SagerNet.Companion.application
@@ -277,6 +278,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var manualGeminiTestFilterEnabled by configurationStore.boolean(Key.MANUAL_GEMINI_TEST_FILTER_ENABLED)
     var autoVpnEnabled by configurationStore.boolean(Key.AUTO_VPN_ENABLED)
     var autoVpnPrecheckEnabled by configurationStore.boolean(Key.AUTO_VPN_PRECHECK_ENABLED) { true }
+    var autoVpnTrafficMonitorEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED) { true }
     var autoVpnMode by configurationStore.int(Key.AUTO_VPN_MODE)
     var autoVpnCheckIntervalSeconds by configurationStore.stringToInt(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS) { 120 }
     var autoVpnBadPingMillis by configurationStore.stringToInt(Key.AUTO_VPN_BAD_PING_MILLIS) { 3000 }
@@ -622,6 +624,11 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             Key.GROUP_SOURCE_VPN_RETRY_COUNT -> {
                 runOnDefaultDispatcher {
                     GroupSourceSyncer.reconfigureVpnSyncForState()
+                }
+            }
+            Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED -> {
+                runOnDefaultDispatcher {
+                    AutoVpnManager.onTrafficMonitorSettingChanged()
                 }
             }
         }

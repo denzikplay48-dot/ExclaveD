@@ -346,6 +346,13 @@
     <string name="auto_vpn_enabled_sum">Automatically pick, monitor, and switch profiles when VPN is running</string>
     <string name="auto_vpn_precheck_enabled">Preliminary profile test</string>
     <string name="auto_vpn_precheck_enabled_sum">Test the selected candidate before connecting it</string>
+    <string name="auto_vpn_traffic_monitor_beta">Traffic-based check (Beta)</string>
+    <string name="auto_vpn_traffic_monitor_beta_sum">Use suspicious traffic patterns to trigger an extra Auto VPN profile check</string>
+    <string name="auto_vpn_network_checking">Checking network...</string>
+    <string name="auto_vpn_network_normal">Regular VPN</string>
+    <string name="auto_vpn_network_whitelist">Whitelist mode</string>
+    <string name="auto_vpn_network_unavailable">Network unavailable</string>
+    <string name="auto_vpn_network_partial">Partial access</string>
     <string name="auto_vpn_check_interval_seconds">Auto VPN check interval, seconds</string>
     <string name="auto_vpn_bad_ping_millis">Bad ping threshold, ms</string>
     <string name="auto_vpn_failures_before_switch">Failures before switching profile</string>

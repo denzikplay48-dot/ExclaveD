@@ -371,6 +371,7 @@ object ProfileTestRunner {
         geminiFilter: Boolean = false,
         resetProfileIds: List<Long> = emptyList(),
     ) {
+        AutoVpnManager.refreshNetworkStatus("profile-test-start")
         val ids = profileIdsToTest.distinct()
         DiagnosticLog.critical(
             "profile-test",

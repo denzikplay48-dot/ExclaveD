@@ -3003,18 +3003,23 @@ class ConfigurationFragment @JvmOverloads constructor(
                 trafficText.isVisible = false
                 (trafficText.parent as View).isGone = false
 
-                if (DataStore.autoVpnEnabled && DataStore.autoVpnMode == mode) {
-                    profileStatus.text = AutoVpnManager.cardStatusText(mode)
-                    profileStatus.setTextColor(
-                        requireContext().getColour(
-                            if (AutoVpnManager.hasLastPingError()) {
-                                R.color.material_red_500
-                            } else {
-                                R.color.material_green_500
-                            }
+                if (DataStore.autoVpnMode == mode) {
+                    if (DataStore.autoVpnEnabled) {
+                        profileStatus.text = AutoVpnManager.cardStatusText(mode)
+                        profileStatus.setTextColor(
+                            requireContext().getColour(
+                                if (AutoVpnManager.hasLastPingError()) {
+                                    R.color.material_red_500
+                                } else {
+                                    R.color.material_green_500
+                                }
+                            )
                         )
-                    )
-                    selectedView.visibility = View.VISIBLE
+                    } else {
+                        profileStatus.text = AutoVpnManager.networkStatusText()
+                        profileStatus.setTextColor(Color.GRAY)
+                    }
+                    selectedView.visibility = if (DataStore.autoVpnEnabled) View.VISIBLE else View.INVISIBLE
                 } else {
                     profileStatus.text = ""
                     selectedView.visibility = View.INVISIBLE

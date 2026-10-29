@@ -381,6 +381,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
 
         val autoVpnEnabled = findPreference<SwitchPreference>(Key.AUTO_VPN_ENABLED)!!
         val autoVpnPrecheck = findPreference<SwitchPreference>(Key.AUTO_VPN_PRECHECK_ENABLED)!!
+        val autoVpnTrafficMonitor = findPreference<SwitchPreference>(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED)!!
         val autoVpnCheckInterval = findPreference<EditTextPreference>(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS)!!
         val autoVpnBadPing = findPreference<EditTextPreference>(Key.AUTO_VPN_BAD_PING_MILLIS)!!
         val autoVpnFailuresBeforeSwitch = findPreference<EditTextPreference>(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH)!!
@@ -449,6 +450,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         }
         val autoVpnPreferences = listOf(
             autoVpnPrecheck,
+            autoVpnTrafficMonitor,
             autoVpnCheckInterval,
             autoVpnBadPing,
             autoVpnFailuresBeforeSwitch,

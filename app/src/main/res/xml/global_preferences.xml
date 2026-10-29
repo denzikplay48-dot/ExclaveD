@@ -279,6 +279,12 @@
             app:key="autoVpnPrecheckEnabled"
             app:summary="@string/auto_vpn_precheck_enabled_sum"
             app:title="@string/auto_vpn_precheck_enabled" />
+        <SwitchPreference
+            app:defaultValue="true"
+            app:icon="@drawable/ic_baseline_speed_24"
+            app:key="autoVpnTrafficMonitorEnabled"
+            app:summary="@string/auto_vpn_traffic_monitor_beta_sum"
+            app:title="@string/auto_vpn_traffic_monitor_beta" />
         <EditTextPreference
             app:defaultValue="120"
             app:icon="@drawable/ic_baseline_timelapse_24"
