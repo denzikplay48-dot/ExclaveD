@@ -1628,16 +1628,6 @@ object AutoVpnManager {
         switchAfterPostConnectFailures(profileId, safeMode)
     }
 
-    fun onTrafficMonitorSettingChanged() {
-        if (!DataStore.autoVpnTrafficMonitorEnabled) {
-            stopTrafficMonitoring()
-            DiagnosticLog.event("auto-vpn", "traffic-monitor-disabled-by-setting")
-        } else if (DataStore.autoVpnEnabled && SagerNet.started && DataStore.startedProfile > 0L) {
-            startTrafficMonitor()
-            DiagnosticLog.event("auto-vpn", "traffic-monitor-enabled-by-setting")
-        }
-    }
-
     private suspend fun shouldCountScoreFailure(error: Throwable): Boolean {
         if (!ProfileTestRunner.isLikelyTransientNetworkFailure(error)) return true
         val now = System.currentTimeMillis()
