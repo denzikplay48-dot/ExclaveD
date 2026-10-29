@@ -421,6 +421,7 @@
     <string name="auto_vpn_diag_current">Current: %s</string>
     <string name="auto_vpn_diag_reason">Reason: %s</string>
     <string name="auto_vpn_diag_score">Current score: %d</string>
+    <string name="auto_vpn_diag_score_unavailable">Current score: -</string>
     <string name="auto_vpn_diag_history">History: ok %1$d, fail %2$d, skipped %3$d</string>
     <string name="auto_vpn_diag_reserve">Reserve: %1$d/%2$d</string>
     <string name="auto_vpn_diag_progress">Checked: %1$d/%2$d</string>

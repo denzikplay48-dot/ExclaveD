@@ -709,6 +709,7 @@
     <string name="auto_vpn_diag_current">Текущий: %s</string>
     <string name="auto_vpn_diag_reason">Причина: %s</string>
     <string name="auto_vpn_diag_score">Score текущего: %d</string>
+    <string name="auto_vpn_diag_score_unavailable">Score текущего: -</string>
     <string name="auto_vpn_diag_history">История: ок %1$d, ошибок %2$d, пропущено %3$d</string>
     <string name="auto_vpn_diag_reserve">Запас: %1$d/%2$d</string>
     <string name="auto_vpn_diag_progress">Проверено: %1$d/%2$d</string>

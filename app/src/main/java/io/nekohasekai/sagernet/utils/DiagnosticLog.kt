@@ -17,6 +17,7 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import io.nekohasekai.sagernet.BuildConfig
+import io.nekohasekai.sagernet.LogLevel
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.ktx.app
@@ -195,15 +196,20 @@ object DiagnosticLog {
         throwable: Throwable?,
         sync: Boolean,
     ) {
+        if (isDisabled()) return
         val entry = buildEntry(level, area, message, throwable)
         if (sync || !initialized.get()) {
             writeNow(entry)
         } else {
             executor.execute {
-                writeNow(entry)
+                if (!isDisabled()) writeNow(entry)
             }
         }
     }
+
+    private fun isDisabled(): Boolean = runCatching {
+        DataStore.logLevel == LogLevel.NONE
+    }.getOrDefault(false)
 
     private fun buildEntry(
         level: String,

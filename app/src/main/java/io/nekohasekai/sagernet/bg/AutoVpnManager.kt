@@ -530,6 +530,16 @@ object AutoVpnManager {
         return buildString {
             appendLine(app.getString(R.string.auto_vpn_diag_mode, modeName(safeMode)))
             appendLine(app.getString(R.string.auto_vpn_diag_current, current?.displayName().orEmpty().ifBlank { "-" }))
+            appendLine(
+                if (current != null) {
+                    app.getString(
+                        R.string.auto_vpn_diag_score,
+                        AutoProfileScoreStore.score(current, safeMode),
+                    )
+                } else {
+                    app.getString(R.string.auto_vpn_diag_score_unavailable)
+                },
+            )
             appendLine(app.getString(R.string.auto_vpn_diag_reason, lastDecisionReason ?: current?.let {
                 selectionReason(it)
             } ?: "-"))
@@ -1830,28 +1840,44 @@ object AutoVpnManager {
      * the HttpURLConnection to that Network keeps this probe outside the tunnel.
      */
     private suspend fun hasDirectInternet(): Boolean {
-        return withTimeoutOrNull(DIRECT_NETWORK_CHECK_TIMEOUT_MS) {
-            val network = DefaultNetworkListener.get()
-            val capabilities = SagerNet.connectivity.getNetworkCapabilities(network)
-                ?: return@withTimeoutOrNull false
-            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                return@withTimeoutOrNull false
+        val listenerKey = Any()
+        val network = CompletableDeferred<Network?>()
+        var listenerStarted = false
+        return try {
+            DefaultNetworkListener.start(listenerKey) { available ->
+                if (available != null) network.complete(available)
             }
-
-            onIoDispatcher {
-                val connection = network.openConnection(URL(DIRECT_NETWORK_CHECK_URL)) as? HttpURLConnection
-                    ?: return@onIoDispatcher false
-                try {
-                    connection.instanceFollowRedirects = true
-                    connection.requestMethod = "HEAD"
-                    connection.connectTimeout = DIRECT_NETWORK_CONNECT_TIMEOUT_MS
-                    connection.readTimeout = DIRECT_NETWORK_READ_TIMEOUT_MS
-                    connection.responseCode in 200..399
-                } finally {
-                    connection.disconnect()
+            listenerStarted = true
+            withTimeoutOrNull(DIRECT_NETWORK_CHECK_TIMEOUT_MS) {
+                val directNetwork = network.await() ?: return@withTimeoutOrNull false
+                val capabilities = SagerNet.connectivity.getNetworkCapabilities(directNetwork)
+                    ?: return@withTimeoutOrNull false
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    return@withTimeoutOrNull false
                 }
-            }
-        } == true
+
+                onIoDispatcher {
+                    val connection = directNetwork.openConnection(URL(DIRECT_NETWORK_CHECK_URL)) as? HttpURLConnection
+                        ?: return@onIoDispatcher false
+                    try {
+                        connection.instanceFollowRedirects = true
+                        connection.requestMethod = "HEAD"
+                        connection.connectTimeout = DIRECT_NETWORK_CONNECT_TIMEOUT_MS
+                        connection.readTimeout = DIRECT_NETWORK_READ_TIMEOUT_MS
+                        connection.responseCode in 200..399
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+            } == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.warn("auto-vpn", "direct-network-check-failed", e)
+            false
+        } finally {
+            if (listenerStarted) runCatching { DefaultNetworkListener.stop(listenerKey) }
+        }
     }
 
     private suspend fun shouldCountScoreFailure(error: Throwable): Boolean {

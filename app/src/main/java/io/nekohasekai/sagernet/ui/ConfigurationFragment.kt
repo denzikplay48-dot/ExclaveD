@@ -1262,7 +1262,7 @@ class ConfigurationFragment @JvmOverloads constructor(
         }
         ProfileTestRunner.syncFromStore()
         AutoVpnManager.syncVisibleStateFromStore()
-        if (!ProfileTestRunner.hasVisibleState() && !AutoVpnManager.hasProgressState()) {
+        if (!ProfileTestRunner.isRunning() && !AutoVpnManager.isAutoRunning()) {
             profileTestStatusPollJob?.cancel()
             profileTestStatusPollJob = null
             return
@@ -1278,10 +1278,11 @@ class ConfigurationFragment @JvmOverloads constructor(
 
                 ProfileTestRunner.syncFromStore()
                 AutoVpnManager.syncVisibleStateFromStore()
+                val active = ProfileTestRunner.isRunning() || AutoVpnManager.isAutoRunning()
                 val visible = ProfileTestRunner.hasVisibleState() || AutoVpnManager.hasProgressState()
                 DiagnosticLog.event(
                     "configuration-ui",
-                    "status-poll visible=$visible profileRunning=${ProfileTestRunner.isRunning()} " +
+                    "status-poll active=$active visible=$visible profileRunning=${ProfileTestRunner.isRunning()} " +
                             "profile=${ProfileTestRunner.diagnosticStateSummary()} " +
                             "autoRunning=${AutoVpnManager.isAutoRunning()} autoText=${AutoVpnManager.progressText()}"
                 )
@@ -1303,7 +1304,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                     }
                 }
 
-                if (!visible) break
+                if (!active) break
             }
         }
     }
