@@ -364,6 +364,17 @@ class BaseService {
             return (data?.proxy?.service as? VpnService)?.tun?.trafficStatsEnabled ?: false
         }
 
+        fun autoTrafficSample(): TrafficStats? {
+            val currentData = data ?: return null
+            if (currentData.state != State.Connected) return null
+            val proxy = currentData.proxy ?: return null
+            val (stats, _) = proxy.outboundStats()
+            return TrafficStats(
+                txTotal = stats.uplinkTotal,
+                rxTotal = stats.downlinkTotal,
+            )
+        }
+
         override fun close() {
             callbacks.kill()
             cancel()
@@ -586,7 +597,10 @@ class BaseService {
                     if (DataStore.serviceMode == Key.MODE_VPN) {
                         VpnSubscriptionUpdateScheduler.onVpnStarted()
                         GroupSourceSyncer.onVpnStarted()
-                        AutoVpnManager.onVpnStarted { data.binder.urlTest() }
+                        AutoVpnManager.onVpnStarted(
+                            urlTester = { data.binder.urlTest() },
+                            trafficSampler = { onMainDispatcher { data.binder.autoTrafficSample() } },
+                        )
                     }
                     data.binder.checkLoop()
 

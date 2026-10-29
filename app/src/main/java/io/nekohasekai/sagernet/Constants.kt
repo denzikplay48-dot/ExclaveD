@@ -98,6 +98,7 @@ object Key {
     const val MANUAL_GEMINI_TEST_FILTER_ENABLED = "manualGeminiTestFilterEnabled"
     const val AUTO_VPN_ENABLED = "autoVpnEnabled"
     const val AUTO_VPN_PRECHECK_ENABLED = "autoVpnPrecheckEnabled"
+    const val AUTO_VPN_TRAFFIC_MONITOR_ENABLED = "autoVpnTrafficMonitorEnabled"
     const val AUTO_VPN_MODE = "autoVpnMode"
     const val AUTO_VPN_CHECK_INTERVAL_SECONDS = "autoVpnCheckIntervalSeconds"
     const val AUTO_VPN_BAD_PING_MILLIS = "autoVpnBadPingMillis"

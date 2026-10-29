@@ -808,6 +808,7 @@ class MainActivity : ThemedActivity(),
             "MainActivity.onResume state=$state profileTest=${ProfileTestRunner.diagnosticStateSummary()} " +
                     "${DiagnosticLog.stateSummary()}"
         )
+        AutoVpnManager.refreshNetworkStatus("main-activity-resume")
         scheduleReleaseUpdateCheck()
     }
 
