@@ -158,7 +158,14 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         var timeout = 1000000000L / 2
         try {
             while (true) {
-                val line = stdout.readLine() ?: break
+                val line = try {
+                    stdout.readLine()
+                } catch (e: IOException) {
+                    if (isActive && viewAvailable && !diagnosticJournalSelected) {
+                        DiagnosticLog.warn("logcat-view", "logcat stream read failed", e)
+                    }
+                    null
+                } ?: break
                 bufferedLogLines.add(line)
                 val timeNow = System.nanoTime()
                 if (
