@@ -445,6 +445,8 @@
     <string name="auto_vpn_diag_quarantine">Quarantine: %d</string>
     <string name="auto_vpn_reset_gemini_rejected">Reset skipped Gemini profiles</string>
     <string name="auto_vpn_reset_gemini_rejected_done">Reset %d skipped Gemini profiles</string>
+    <string name="auto_vpn_reset_exit_country_rejected">Reset profiles rejected by exit country</string>
+    <string name="auto_vpn_reset_exit_country_rejected_done">Reset %d profiles rejected by exit country</string>
     <string name="auto_vpn_switch_requested">Selecting profile...</string>
     <string name="auto_vpn_no_candidate">No suitable profile found</string>
     <string name="auto_vpn_switched_to">Switched to %s</string>

@@ -296,6 +296,8 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnGeminiRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_GEMINI_REJECTED_KEYS)
     var autoVpnGeminiRejectedNames by configurationStore.string(Key.AUTO_VPN_GEMINI_REJECTED_NAMES)
     var autoVpnGeminiRejectedRevision by configurationStore.long(Key.AUTO_VPN_GEMINI_REJECTED_REVISION)
+    var autoVpnExitCountryRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_KEYS)
+    var autoVpnExitCountryRejectedRevision by configurationStore.long(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_REVISION)
     var autoVpnProfileScoreStats by configurationStore.string(Key.AUTO_VPN_PROFILE_SCORE_STATS)
     var autoVpnStatusText by configurationStore.string(Key.AUTO_VPN_STATUS_TEXT)
     var autoVpnDetailStatusText by configurationStore.string(Key.AUTO_VPN_DETAIL_STATUS_TEXT)

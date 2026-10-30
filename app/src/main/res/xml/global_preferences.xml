@@ -349,6 +349,10 @@
             app:icon="@drawable/ic_action_delete"
             app:key="autoVpnResetGeminiRejected"
             app:title="@string/auto_vpn_reset_gemini_rejected" />
+        <Preference
+            app:icon="@drawable/ic_action_delete"
+            app:key="autoVpnResetExitCountryRejected"
+            app:title="@string/auto_vpn_reset_exit_country_rejected" />
         <io.nekohasekai.sagernet.widget.SimpleMenuPreference
             android:icon="@drawable/baseline_flight_takeoff_24"
             app:defaultValue="0"
