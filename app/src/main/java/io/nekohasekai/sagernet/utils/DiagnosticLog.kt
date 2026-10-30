@@ -21,6 +21,7 @@ import io.nekohasekai.sagernet.LogLevel
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.ktx.app
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
@@ -38,6 +39,9 @@ object DiagnosticLog {
     private const val TAG = "DiagnosticLog"
     private const val MAX_BYTES = 8L * 1024L * 1024L
     private const val KEEP_BYTES = 6L * 1024L * 1024L
+    private const val MAX_AGE_MS = 60L * 60L * 1000L
+    private const val RETENTION_TRIM_INTERVAL_MS = 60_000L
+    private const val TIMESTAMP_PREFIX_LENGTH = 29
     private const val CRASH_REPORT_BYTES = 2 * 1024 * 1024
     private const val WATCHDOG_INTERVAL_MS = 5_000L
     private const val WATCHDOG_STALL_MS = 10_000L
@@ -50,6 +54,9 @@ object DiagnosticLog {
     private val lock = Any()
     private val timeFormat = ThreadLocal<SimpleDateFormat>()
     private val fileTimeFormat = ThreadLocal<SimpleDateFormat>()
+
+    @Volatile
+    private var lastRetentionTrimAtMs = 0L
 
     @Volatile
     private var processName: String = BuildConfig.APPLICATION_ID
@@ -245,6 +252,11 @@ object DiagnosticLog {
         synchronized(lock) {
             runCatching {
                 withFileLock {
+                    val now = System.currentTimeMillis()
+                    if (now - lastRetentionTrimAtMs >= RETENTION_TRIM_INTERVAL_MS) {
+                        trimOlderEntriesLocked(now)
+                        lastRetentionTrimAtMs = now
+                    }
                     trimIfNeededLocked()
                     FileOutputStream(logFile, true).use { output ->
                         output.write(entry.toByteArray(StandardCharsets.UTF_8))
@@ -261,6 +273,10 @@ object DiagnosticLog {
             runCatching {
                 withFileLock {
                     if (!logFile.exists()) return@withFileLock "Persistent diagnostic journal is empty.\n"
+                    val now = System.currentTimeMillis()
+                    trimOlderEntriesLocked(now)
+                    trimIfNeededLocked()
+                    lastRetentionTrimAtMs = now
                     val bytes = logFile.readBytes()
                     val safeMax = maxBytes.coerceAtLeast(1)
                     val selected = if (bytes.size > safeMax) {
@@ -304,6 +320,71 @@ object DiagnosticLog {
             )
             output.write(keep)
         }
+    }
+
+    private fun trimOlderEntriesLocked(now: Long) {
+        if (!logFile.exists()) return
+        val bytes = logFile.readBytes()
+        val cutoff = now - MAX_AGE_MS
+        val retained = ByteArrayOutputStream(bytes.size)
+        var recordStart = -1
+        var keepRecord = false
+        var removedOldRecords = false
+        var sawRecord = false
+        var lineStart = 0
+
+        while (lineStart < bytes.size) {
+            var lineEnd = lineStart
+            while (lineEnd < bytes.size && bytes[lineEnd] != '\n'.code.toByte()) lineEnd++
+            val timestamp = parseEntryTimestamp(bytes, lineStart, lineEnd)
+            if (timestamp != null) {
+                if (recordStart >= 0) {
+                    if (keepRecord) {
+                        retained.write(bytes, recordStart, lineStart - recordStart)
+                    } else {
+                        removedOldRecords = true
+                    }
+                }
+                recordStart = lineStart
+                keepRecord = timestamp >= cutoff
+                sawRecord = true
+            }
+            lineStart = (lineEnd + 1).coerceAtMost(bytes.size)
+        }
+
+        if (!sawRecord || (!removedOldRecords && (recordStart < 0 || keepRecord))) return
+        if (recordStart >= 0) {
+            if (keepRecord) {
+                retained.write(bytes, recordStart, bytes.size - recordStart)
+            } else {
+                removedOldRecords = true
+            }
+        }
+        if (!removedOldRecords) return
+
+        FileOutputStream(logFile, false).use { output ->
+            output.write("--- diagnostic journal: entries older than 1 hour removed ---\n"
+                .toByteArray(StandardCharsets.UTF_8))
+            retained.writeTo(output)
+        }
+    }
+
+    private fun parseEntryTimestamp(bytes: ByteArray, start: Int, end: Int): Long? {
+        if (end - start < TIMESTAMP_PREFIX_LENGTH + 7) return null
+        val marker = start + TIMESTAMP_PREFIX_LENGTH
+        if (bytes[marker] != ' '.code.toByte() || bytes[marker + 2] != ' '.code.toByte() ||
+            bytes[marker + 3] != 'p'.code.toByte() || bytes[marker + 4] != 'i'.code.toByte() ||
+            bytes[marker + 5] != 'd'.code.toByte() || bytes[marker + 6] != '='.code.toByte()
+        ) return null
+        val prefix = String(bytes, start, TIMESTAMP_PREFIX_LENGTH, StandardCharsets.US_ASCII)
+        val formatter = timeFormat.get() ?: SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss.SSS Z",
+            Locale.US,
+        ).also {
+            it.timeZone = TimeZone.getDefault()
+            timeFormat.set(it)
+        }
+        return runCatching { formatter.parse(prefix)?.time }.getOrNull()
     }
 
     private fun buildExportHeader(): String {

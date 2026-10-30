@@ -9,6 +9,17 @@
     <string name="app_update_stable">обычный релиз</string>
     <string name="app_update_later">Позже</string>
     <string name="app_update_download">Скачать обновление</string>
+    <string name="app_update_cancel">Отменить скачивание</string>
+    <string name="app_update_downloading_title">Скачивание обновления %1$s</string>
+    <string name="app_update_download_progress">%1$s из %2$s</string>
+    <string name="app_update_downloaded">Скачано %1$s</string>
+    <string name="app_update_download_failed">Не удалось скачать обновление: %1$s</string>
+    <string name="app_update_install_permission_title">Разрешите установку приложения</string>
+    <string name="app_update_install_permission_message">Android требует разрешение на установку обновлений, скачанных ExclaveD. Разрешите установку приложений из этого источника, после чего установщик откроется автоматически.</string>
+    <string name="app_update_allow_install">Открыть настройки</string>
+    <string name="app_update_install_permission_denied">Разрешите ExclaveD устанавливать приложения, чтобы продолжить.</string>
+    <string name="app_update_install">Установить обновление</string>
+    <string name="app_update_install_failed">Не удалось запустить системный установщик APK.</string>
     <string name="lite_choose_mode">Режим автоподбора</string>
     <string name="lite_mode_no_ru">Без RU</string>
     <string name="lite_mode_gemini">Gemini</string>

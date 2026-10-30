@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 data class AvailableAppUpdate(
     val version: String,
     val prerelease: Boolean,
+    val assetName: String,
+    val downloadSize: Long,
     val downloadUrl: String,
 )
 
@@ -69,6 +71,9 @@ object ReleaseUpdateChecker {
                 AvailableAppUpdate(
                     version = version,
                     prerelease = prerelease,
+                    assetName = asset.optString("name").takeIf(String::isNotBlank)
+                        ?: return@mapNotNull null,
+                    downloadSize = asset.optLong("size").coerceAtLeast(0L),
                     downloadUrl = asset.optString("browser_download_url").takeIf(String::isNotBlank)
                         ?: return@mapNotNull null,
                 )

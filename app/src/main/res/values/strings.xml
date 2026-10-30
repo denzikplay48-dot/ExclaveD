@@ -10,6 +10,17 @@
     <string name="app_update_stable">release</string>
     <string name="app_update_later">Later</string>
     <string name="app_update_download">Download update</string>
+    <string name="app_update_cancel">Cancel download</string>
+    <string name="app_update_downloading_title">Downloading update %1$s</string>
+    <string name="app_update_download_progress">%1$s of %2$s</string>
+    <string name="app_update_downloaded">Downloaded %1$s</string>
+    <string name="app_update_download_failed">Could not download the update: %1$s</string>
+    <string name="app_update_install_permission_title">Allow app installation</string>
+    <string name="app_update_install_permission_message">Android requires permission to install updates downloaded by ExclaveD. Allow installs from this app, then the installer will open automatically.</string>
+    <string name="app_update_allow_install">Open settings</string>
+    <string name="app_update_install_permission_denied">Allow ExclaveD to install apps to continue.</string>
+    <string name="app_update_install">Install update</string>
+    <string name="app_update_install_failed">Could not start the Android package installer.</string>
     <string name="lite_choose_mode">Auto mode</string>
     <string name="lite_mode_no_ru">No RU</string>
     <string name="lite_mode_gemini">Gemini</string>

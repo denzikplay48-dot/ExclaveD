@@ -3528,10 +3528,16 @@ object AutoVpnManager {
     private suspend fun restartAutoScanCycle(mode: Int, scannedTotal: Int, testedAnyInCycle: Boolean): Boolean {
         val safeMode = sanitizeMode(mode)
         val completedStoredCycle = scannedCount(safeMode) >= scannedTotal
-        if (scannedTotal <= 0 || (!testedAnyInCycle && !completedStoredCycle)) return false
+        val completedProgressCycle = synchronized(progressLock) {
+            autoTotal == scannedTotal && autoFinished >= autoTotal
+        }
+        if (scannedTotal <= 0 ||
+            (!testedAnyInCycle && !completedStoredCycle && !completedProgressCycle)
+        ) return false
         DiagnosticLog.critical(
             "auto-vpn",
             "restart-scan-cycle mode=$safeMode scanned=$scannedTotal testedAny=$testedAnyInCycle " +
+                    "completedProgress=$completedProgressCycle " +
                     "storedScanned=${scannedCount(safeMode)} progress=$autoFinished/$autoTotal working=$autoWorking"
         )
         failedUntil.clear()
@@ -3636,6 +3642,24 @@ object AutoVpnManager {
         val retainedWorking = reserveCount(safeMode)
         val scannedFinished = scannedCount(safeMode).coerceIn(0, safeTotal)
         val stored = storedAutoProgressSnapshot()
+        val completedStoredCycle = stored != null &&
+                !stored.running &&
+                stored.total == safeTotal &&
+                safeTotal > 0 &&
+                stored.finished >= safeTotal
+        if (completedStoredCycle) {
+            failedUntil.clear()
+            synchronized(scannedIds) {
+                scannedIds.remove(safeMode)
+            }
+            clearStoredScannedIds(safeMode)
+            DiagnosticLog.critical(
+                "auto-vpn",
+                "progress-on-demand-new-cycle mode=$safeMode total=$safeTotal finished=${stored!!.finished}"
+            )
+            resetAutoProgressForNextCycle(safeMode, safeTotal)
+            return true
+        }
         if (stored != null &&
             stored.total == safeTotal &&
             (stored.running || stored.finished > 0 || scannedFinished > 0)
