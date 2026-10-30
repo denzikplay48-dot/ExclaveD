@@ -52,6 +52,7 @@ import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
 import androidx.sqlite.db.SimpleSQLiteQuery
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
@@ -1262,7 +1263,7 @@ class ConfigurationFragment @JvmOverloads constructor(
         }
         ProfileTestRunner.syncFromStore()
         AutoVpnManager.syncVisibleStateFromStore()
-        if (!ProfileTestRunner.hasVisibleState() && !AutoVpnManager.hasProgressState()) {
+        if (!ProfileTestRunner.isRunning() && !AutoVpnManager.isAutoRunning()) {
             profileTestStatusPollJob?.cancel()
             profileTestStatusPollJob = null
             return
@@ -1278,10 +1279,11 @@ class ConfigurationFragment @JvmOverloads constructor(
 
                 ProfileTestRunner.syncFromStore()
                 AutoVpnManager.syncVisibleStateFromStore()
+                val active = ProfileTestRunner.isRunning() || AutoVpnManager.isAutoRunning()
                 val visible = ProfileTestRunner.hasVisibleState() || AutoVpnManager.hasProgressState()
                 DiagnosticLog.event(
                     "configuration-ui",
-                    "status-poll visible=$visible profileRunning=${ProfileTestRunner.isRunning()} " +
+                    "status-poll active=$active visible=$visible profileRunning=${ProfileTestRunner.isRunning()} " +
                             "profile=${ProfileTestRunner.diagnosticStateSummary()} " +
                             "autoRunning=${AutoVpnManager.isAutoRunning()} autoText=${AutoVpnManager.progressText()}"
                 )
@@ -1303,7 +1305,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                     }
                 }
 
-                if (!visible) break
+                if (!active) break
             }
         }
     }
@@ -2026,6 +2028,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             }
             layoutManager = FixedLinearLayoutManager(configurationListView)
             configurationListView.layoutManager = layoutManager
+            (configurationListView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
             adapter = ConfigurationAdapter()
             ProfileManager.addListener(adapter)
             GroupManager.addListener(adapter)
@@ -2447,6 +2450,15 @@ class ConfigurationFragment @JvmOverloads constructor(
                     if (!isFragmentReady()) return@post
                     for (item in AutoVpnManager.autoListItems()) {
                         val index = configurationIndex[item.id] ?: continue
+                        val previous = configurationList[item.id]
+                        if (previous != null && previous.displayNameCache == item.displayNameCache &&
+                            previous.displayTypeCache == item.displayTypeCache &&
+                            previous.displayAddressCache == item.displayAddressCache &&
+                            previous.status == item.status && previous.ping == item.ping &&
+                            previous.error == item.error
+                        ) {
+                            continue
+                        }
                         configurationList[item.id] = item
                         (configurationListView.findViewHolderForAdapterPosition(index) as? ConfigurationHolder)
                             ?.takeIf { it.isBoundTo(item.id) }

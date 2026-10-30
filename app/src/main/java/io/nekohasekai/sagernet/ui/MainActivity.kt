@@ -33,11 +33,15 @@ import android.text.util.Linkify
 import android.view.KeyEvent
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.annotation.IdRes
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.FileProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -74,7 +78,13 @@ import io.nekohasekai.sagernet.utils.PackageCache
 import io.noties.markwon.Markwon
 import libsagernetcore.Libsagernetcore
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
 import kotlin.io.encoding.Base64
 import java.util.Locale
 
@@ -86,6 +96,10 @@ class MainActivity : ThemedActivity(),
     lateinit var binding: LayoutMainBinding
     lateinit var navigation: NavigationView
     private var releaseUpdateCheckScheduled = false
+    private var appUpdateJob: Job? = null
+    private var appUpdateDownloader: AppUpdateDownloader? = null
+    private var pendingUpdateInstall: File? = null
+    private var waitingForInstallPermission = false
 
     val userInterface by lazy { GroupInterfaceAdapter(this) }
 
@@ -804,6 +818,7 @@ class MainActivity : ThemedActivity(),
 
     override fun onResume() {
         super.onResume()
+        completePendingUpdateInstall()
         DiagnosticLog.critical(
             "ui",
             "MainActivity.onResume state=$state profileTest=${ProfileTestRunner.diagnosticStateSummary()} " +
@@ -833,14 +848,158 @@ class MainActivity : ThemedActivity(),
                 )
                 .setNegativeButton(R.string.app_update_later, null)
                 .setPositiveButton(R.string.app_update_download) { _, _ ->
-                    runCatching {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.downloadUrl)))
-                    }.onFailure {
-                        snackbar(R.string.action_export_err).show()
-                    }
+                    downloadAndInstallUpdate(update)
                 }
                 .show()
         }
+    }
+
+    private fun downloadAndInstallUpdate(update: AvailableAppUpdate) {
+        if (appUpdateJob?.isActive == true) return
+
+        val horizontalPadding = (24 * resources.displayMetrics.density).toInt()
+        val progressLabel = TextView(this)
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000
+            isIndeterminate = update.downloadSize <= 0L
+        }
+        progressLabel.text = if (update.downloadSize > 0L) {
+            getString(
+                R.string.app_update_download_progress,
+                android.text.format.Formatter.formatFileSize(this, 0L),
+                android.text.format.Formatter.formatFileSize(this, update.downloadSize),
+            )
+        } else {
+            getString(R.string.app_update_downloaded, android.text.format.Formatter.formatFileSize(this, 0L))
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(horizontalPadding, horizontalPadding / 2, horizontalPadding, 0)
+            addView(progressLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(
+                progressBar,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = (12 * resources.displayMetrics.density).toInt()
+                },
+            )
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.app_update_downloading_title, update.version))
+            .setView(content)
+            .setNegativeButton(R.string.app_update_cancel, null)
+            .create()
+        dialog.setCancelable(false)
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                appUpdateDownloader?.cancel()
+                appUpdateJob?.cancel()
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+
+        val downloader = AppUpdateDownloader(this, update)
+        appUpdateDownloader = downloader
+        appUpdateJob = lifecycleScope.launch {
+            try {
+                val apk = downloader.download { downloaded, total ->
+                    runOnUiThread {
+                        if (!dialog.isShowing || isFinishing || isDestroyed) return@runOnUiThread
+                        val progressTotal = total.takeIf { it > 0L } ?: update.downloadSize
+                        progressBar.isIndeterminate = progressTotal <= 0L
+                        if (progressTotal > 0L) {
+                            progressBar.progress = ((downloaded * 1000L) / progressTotal).coerceIn(0L, 1000L).toInt()
+                            progressLabel.text = getString(
+                                R.string.app_update_download_progress,
+                                android.text.format.Formatter.formatFileSize(this@MainActivity, downloaded),
+                                android.text.format.Formatter.formatFileSize(this@MainActivity, progressTotal),
+                            )
+                        } else {
+                            progressLabel.text = getString(
+                                R.string.app_update_downloaded,
+                                android.text.format.Formatter.formatFileSize(this@MainActivity, downloaded),
+                            )
+                        }
+                    }
+                }
+                val archive = withContext(Dispatchers.IO) {
+                    packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+                } ?: throw IOException("Downloaded file is not a valid APK")
+                if (archive.packageName != packageName || archive.versionName != update.version) {
+                    throw IOException("Downloaded APK does not match this app update")
+                }
+                dialog.dismiss()
+                requestUpdateInstall(apk)
+            } catch (_: CancellationException) {
+                dialog.dismiss()
+            } catch (e: Exception) {
+                dialog.dismiss()
+                if (!isFinishing && !isDestroyed) {
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setMessage(getString(R.string.app_update_download_failed, e.localizedMessage ?: e.javaClass.simpleName))
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show()
+                }
+            } finally {
+                if (appUpdateDownloader === downloader) appUpdateDownloader = null
+                appUpdateJob = null
+            }
+        }
+    }
+
+    private fun requestUpdateInstall(apk: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.app_update_install_permission_title)
+                .setMessage(R.string.app_update_install_permission_message)
+                .setNegativeButton(R.string.app_update_later, null)
+                .setPositiveButton(R.string.app_update_allow_install) { _, _ ->
+                    pendingUpdateInstall = apk
+                    waitingForInstallPermission = true
+                    runCatching {
+                        startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:$packageName"),
+                            ),
+                        )
+                    }.onFailure {
+                        waitingForInstallPermission = false
+                        pendingUpdateInstall = null
+                        snackbar(R.string.app_update_install_failed).show()
+                    }
+                }
+                .show()
+            return
+        }
+        runCatching { launchUpdateInstaller(apk) }
+            .onFailure { snackbar(R.string.app_update_install_failed).show() }
+    }
+
+    private fun completePendingUpdateInstall() {
+        if (!waitingForInstallPermission) return
+        waitingForInstallPermission = false
+        val apk = pendingUpdateInstall
+        pendingUpdateInstall = null
+        if (apk == null || !apk.isFile) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            snackbar(R.string.app_update_install_permission_denied)
+                .setAction(R.string.app_update_install) { requestUpdateInstall(apk) }
+                .show()
+            return
+        }
+        runCatching { launchUpdateInstaller(apk) }
+            .onFailure { snackbar(R.string.app_update_install_failed).show() }
+    }
+
+    private fun launchUpdateInstaller(apk: File) {
+        val uri = FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.cache", apk)
+        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(Intent.EXTRA_RETURN_RESULT, true)
+        }
+        startActivity(intent)
     }
 
     override fun onPause() {
@@ -857,6 +1016,8 @@ class MainActivity : ThemedActivity(),
 
     override fun onDestroy() {
         DiagnosticLog.critical("ui", "MainActivity.onDestroy state=$state ${DiagnosticLog.stateSummary()}")
+        appUpdateDownloader?.cancel()
+        appUpdateJob?.cancel()
         super.onDestroy()
         DataStore.configurationStore.unregisterChangeListener(this)
         connection.disconnect(this)

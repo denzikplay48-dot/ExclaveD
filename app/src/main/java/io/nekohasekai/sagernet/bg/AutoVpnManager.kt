@@ -2964,11 +2964,15 @@ object AutoVpnManager {
     }
 
     private suspend fun restartAutoScanCycle(mode: Int, scannedTotal: Int, testedAnyInCycle: Boolean): Boolean {
-        if (scannedTotal <= 0 || !testedAnyInCycle) return false
         val safeMode = sanitizeMode(mode)
+        val completedProgressCycle = synchronized(progressLock) {
+            autoTotal == scannedTotal && autoFinished >= autoTotal
+        }
+        if (scannedTotal <= 0 || (!testedAnyInCycle && !completedProgressCycle)) return false
         DiagnosticLog.critical(
             "auto-vpn",
             "restart-scan-cycle mode=$safeMode scanned=$scannedTotal testedAny=$testedAnyInCycle " +
+                    "completedProgress=$completedProgressCycle " +
                     "progress=$autoFinished/$autoTotal working=$autoWorking"
         )
         failedUntil.clear()
@@ -3069,6 +3073,23 @@ object AutoVpnManager {
         val safeMode = sanitizeMode(mode)
         val retainedWorking = reserveCount(safeMode)
         val stored = storedAutoProgressSnapshot()
+        val completedStoredCycle = stored != null &&
+                !stored.running &&
+                stored.total == total.coerceAtLeast(0) &&
+                total > 0 &&
+                stored.finished >= total
+        if (completedStoredCycle) {
+            failedUntil.clear()
+            synchronized(scannedIds) {
+                scannedIds.remove(safeMode)
+            }
+            DiagnosticLog.critical(
+                "auto-vpn",
+                "progress-on-demand-new-cycle mode=$safeMode total=$total finished=${stored!!.finished}"
+            )
+            resetAutoProgressForNextCycle(safeMode, total)
+            return true
+        }
         if (stored?.running == true && stored.total == total.coerceAtLeast(0)) {
             synchronized(progressLock) {
                 autoProgressGeneration = maxOf(autoProgressGeneration, stored.generation)
