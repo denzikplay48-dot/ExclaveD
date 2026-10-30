@@ -40,11 +40,25 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.RandomAccessFile
+import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     Toolbar.OnMenuItemClickListener {
 
     lateinit var binding: LayoutLogcatBinding
+    private var streamJob: Job? = null
+    @Volatile private var logcatProcess: Process? = null
+    private var diagnosticJournalSelected = false
+    private var viewAvailable = false
+
+    companion object {
+        private const val MAX_VISIBLE_LOG_LINES = 2_000
+        private const val MAX_INITIAL_JOURNAL_BYTES = 1024 * 1024
+    }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -53,6 +67,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
 
         toolbar.inflateMenu(R.menu.logcat_menu)
         toolbar.setOnMenuItemClickListener(this)
+        toolbar.menu.findItem(R.id.action_clear_logcat)?.isVisible = true
 
         ViewCompat.setOnApplyWindowInsetsListener(view.findViewById(R.id.logsScrollView)) { v, insets ->
             val bars = insets.getInsets(
@@ -70,9 +85,45 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
 
         (requireActivity() as? MainActivity)?.onBackPressedCallback?.isEnabled = true
 
-        runOnIoDispatcher {
-            streamingLog()
+        viewAvailable = true
+        startLogcatStream()
+    }
+
+    override fun onDestroyView() {
+        viewAvailable = false
+        stopLogStream()
+        super.onDestroyView()
+    }
+
+    private fun updateJournalMenuTitle() {
+        toolbar.menu.findItem(R.id.action_toggle_diagnostic)?.apply {
+            title = getString(if (diagnosticJournalSelected) R.string.view_logcat else R.string.view_diagnostic_journal)
+            isChecked = diagnosticJournalSelected
         }
+        toolbar.menu.findItem(R.id.action_clear_logcat)?.isVisible = !diagnosticJournalSelected
+    }
+
+    private fun stopLogStream() {
+        logcatProcess?.destroy()
+        logcatProcess = null
+        streamJob?.cancel()
+        streamJob = null
+    }
+
+    private fun startLogcatStream() {
+        stopLogStream()
+        diagnosticJournalSelected = false
+        updateJournalMenuTitle()
+        binding.logsTextView.text = ""
+        streamJob = runOnIoDispatcher { streamingLog() }
+    }
+
+    private fun startDiagnosticJournalStream() {
+        stopLogStream()
+        diagnosticJournalSelected = true
+        updateJournalMenuTitle()
+        binding.logsTextView.text = getString(R.string.diagnostic_journal_empty)
+        streamJob = runOnIoDispatcher { streamingDiagnosticJournal() }
     }
 
     private suspend fun streamingLog() = onIoDispatcher {
@@ -99,6 +150,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         } catch (_: Exception) {
             return@onIoDispatcher
         }
+        logcatProcess = process
         val stdout = BufferedReader(InputStreamReader(process.inputStream))
         val bufferedLogLines = arrayListOf<String>()
         var timeLastNotify = System.nanoTime()
@@ -119,6 +171,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                 timeLastNotify = timeNow
 
                 onMainDispatcher {
+                    if (!viewAvailable || diagnosticJournalSelected) return@onMainDispatcher
                     if (binding.logsTextView.lineCount + bufferedLogLines.size > 2048) {
                         binding.logsTextView.text = ""
                         if (bufferedLogLines.size > 2048) {
@@ -142,11 +195,73 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
             }
         } finally {
             process?.destroy()
+            if (logcatProcess === process) logcatProcess = null
+        }
+    }
+
+    private suspend fun streamingDiagnosticJournal() = onIoDispatcher {
+        val file = DiagnosticLog.logFile
+        var offset = 0L
+        var firstRead = true
+        while (isActive && diagnosticJournalSelected) {
+            if (file.exists()) {
+                val length = file.length()
+                if (firstRead || length < offset) {
+                    val end = length
+                    val start = (end - MAX_INITIAL_JOURNAL_BYTES).coerceAtLeast(0L)
+                    val bytes = runCatching { RandomAccessFile(file, "r").use { journal ->
+                        journal.seek(start)
+                        ByteArray((end - start).toInt()).also { journal.readFully(it) }
+                    } }.getOrNull()
+                    if (bytes == null) {
+                        delay(750L)
+                        continue
+                    }
+                    var snapshot = String(bytes, StandardCharsets.UTF_8)
+                    if (start > 0L) snapshot = snapshot.substringAfter('\n', "")
+                    snapshot = snapshot.lines().takeLast(MAX_VISIBLE_LOG_LINES)
+                        .joinToString(separator = "\n", postfix = "\n")
+                    offset = end
+                    firstRead = false
+                    onMainDispatcher {
+                        if (viewAvailable && diagnosticJournalSelected) {
+                            binding.logsTextView.text = snapshot.ifBlank {
+                                getString(R.string.diagnostic_journal_empty)
+                            }
+                            binding.logsScrollView.post { binding.logsScrollView.fullScroll(View.FOCUS_DOWN) }
+                        }
+                    }
+                } else if (length > offset) {
+                    val end = length
+                    val bytes = runCatching { RandomAccessFile(file, "r").use { journal ->
+                        journal.seek(offset)
+                        ByteArray((end - offset).toInt()).also { journal.readFully(it) }
+                    } }.getOrNull()
+                    if (bytes == null) {
+                        delay(750L)
+                        continue
+                    }
+                    offset = end
+                    val chunk = String(bytes, StandardCharsets.UTF_8)
+                    onMainDispatcher {
+                        if (!viewAvailable || !diagnosticJournalSelected) return@onMainDispatcher
+                        val combined = binding.logsTextView.text.toString() + chunk
+                        binding.logsTextView.text = combined.lines()
+                            .takeLast(MAX_VISIBLE_LOG_LINES)
+                            .joinToString(separator = "\n", postfix = "\n")
+                        binding.logsScrollView.post { binding.logsScrollView.fullScroll(View.FOCUS_DOWN) }
+                    }
+                }
+            }
+            delay(750L)
         }
     }
 
     override fun onMenuItemClick(item: MenuItem): Boolean {
         when (item.itemId) {
+            R.id.action_toggle_diagnostic -> {
+                if (diagnosticJournalSelected) startLogcatStream() else startDiagnosticJournalStream()
+            }
             R.id.action_clear_logcat -> {
                 runOnIoDispatcher {
                     val command = listOf("logcat", "-c")
