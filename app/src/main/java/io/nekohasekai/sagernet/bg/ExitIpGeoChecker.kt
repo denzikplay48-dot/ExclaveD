@@ -13,7 +13,7 @@ object ExitIpGeoChecker {
     private const val GEOIP_URL = "https://api.ip.sb/geoip"
     private const val TIMEOUT_MILLIS = 4_000
 
-    data class GeoInfo(val ip: String, val countryCode: String?)
+    data class GeoInfo(val countryCode: String?, val countryName: String?)
 
     suspend fun countryCode(proxy: Proxy? = null): String? = geoInfo(proxy)?.countryCode
 
@@ -46,7 +46,10 @@ object ExitIpGeoChecker {
             } else {
                 null
             }
-            GeoInfo(ip, countryCode)
+            val countryName = countryCode?.let {
+                Locale("", it).getDisplayCountry(Locale.getDefault()).takeIf(String::isNotBlank)
+            } ?: response.optString("country").trim().takeIf(String::isNotBlank)
+            GeoInfo(countryCode, countryName)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
