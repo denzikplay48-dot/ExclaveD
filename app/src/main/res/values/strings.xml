@@ -368,6 +368,10 @@
     <string name="auto_vpn_ready_address">Current: %1$s</string>
     <string name="auto_vpn_reserve_count">Reserve: %1$d/%2$d</string>
     <string name="auto_vpn_candidates_count">Candidates: %1$d/%2$d</string>
+    <string name="auto_vpn_last_exit_ip">Last exit IP: %1$s</string>
+    <string name="view_diagnostic_journal">Diagnostic journal (live)</string>
+    <string name="view_logcat">Android logcat</string>
+    <string name="diagnostic_journal_empty">No diagnostic entries yet.</string>
     <string name="auto_vpn_last_ping">Last ping: %d ms</string>
     <string name="auto_vpn_last_ping_error">Last ping: error</string>
     <string name="auto_vpn_enabled_short">Auto selection enabled</string>

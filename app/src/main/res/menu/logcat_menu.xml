@@ -3,6 +3,11 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
+        android:id="@+id/action_toggle_diagnostic"
+        android:title="@string/view_diagnostic_journal"
+        android:checkable="true"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_send_logcat"
         android:icon="@drawable/baseline_send_24"
         android:title="@string/logcat"
