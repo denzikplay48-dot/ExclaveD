@@ -49,6 +49,9 @@ object DataStore : OnPreferenceDataStoreChangeListener {
 
     fun init() {
         configurationStore.registerChangeListener(this)
+        configurationStore.remove("autoVpnLastExitIp")
+        configurationStore.remove("autoVpnLastExitIpProfile")
+        configurationStore.remove("autoVpnLastExitIpCheckedAt")
 
         // migrate from 0.14.10
         val ipv6Mode0 = configurationStore.getString("ipv6Mode0")?.toIntOrNull()
@@ -303,9 +306,10 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnProgressGeneration by configurationStore.long(Key.AUTO_VPN_PROGRESS_GENERATION)
     var autoVpnLastPingMillis by configurationStore.int(Key.AUTO_VPN_LAST_PING_MILLIS)
     var autoVpnLastPingFailed by configurationStore.boolean(Key.AUTO_VPN_LAST_PING_FAILED)
-    var autoVpnLastExitIp by configurationStore.string(Key.AUTO_VPN_LAST_EXIT_IP)
-    var autoVpnLastExitIpProfile by configurationStore.long(Key.AUTO_VPN_LAST_EXIT_IP_PROFILE)
-    var autoVpnLastExitIpCheckedAt by configurationStore.long(Key.AUTO_VPN_LAST_EXIT_IP_CHECKED_AT)
+    var autoVpnLastExitCountry by configurationStore.string(Key.AUTO_VPN_LAST_EXIT_COUNTRY)
+    var autoVpnLastExitCountryProfile by configurationStore.long(Key.AUTO_VPN_LAST_EXIT_COUNTRY_PROFILE)
+    var autoVpnLastExitCountryCheckedAt by configurationStore.long(Key.AUTO_VPN_LAST_EXIT_COUNTRY_CHECKED_AT)
+    var diagnosticJournalSessionId by configurationStore.long(Key.DIAGNOSTIC_JOURNAL_SESSION_ID)
     var autoVpnResultsResetGeneration by configurationStore.int(Key.AUTO_VPN_RESULTS_RESET_GENERATION)
     var autoVpnStatusUpdatedAt by configurationStore.long(Key.AUTO_VPN_STATUS_UPDATED_AT)
     var autoVpnReserveCountAny by configurationStore.int(Key.AUTO_VPN_RESERVE_COUNT_ANY)

@@ -49,6 +49,7 @@ import io.nekohasekai.sagernet.database.preference.EditTextPreferenceModifiers
 import io.nekohasekai.sagernet.ktx.*
 import io.nekohasekai.sagernet.ui.profile.ProfileSettingsActivity
 import io.nekohasekai.sagernet.utils.PackageCache
+import io.nekohasekai.sagernet.utils.DiagnosticLog
 import io.nekohasekai.sagernet.utils.Theme
 import io.nekohasekai.sagernet.widget.ColorPickerPreference
 import io.nekohasekai.sagernet.widget.LinkOrContentPreference
@@ -265,7 +266,9 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         showDirectSpeed.onPreferenceChangeListener = reloadListener
 
         findPreference<ListPreference>(Key.LOG_LEVEL)!!.setOnPreferenceChangeListener { _, newValue ->
-            if ((newValue as String).toInt() == LogLevel.DEBUG && !DataStore.logLevelDebugWarningDisable) {
+            val level = (newValue as String).toInt()
+            DiagnosticLog.onLogLevelChanged(level)
+            if (level == LogLevel.DEBUG && !DataStore.logLevelDebugWarningDisable) {
                 MaterialAlertDialogBuilder(requireContext()).apply {
                     setMessage(R.string.debug_log_sum)
                     setPositiveButton(android.R.string.ok, null)

@@ -95,7 +95,7 @@ object AutoVpnManager {
     private const val TRAFFIC_INCOMING_MAX_BYTES = 256L
     private const val TRAFFIC_CONFIRM_DELAY_MS = 5_000L
     private const val TRAFFIC_DIAGNOSTIC_COOLDOWN_MS = 60_000L
-    private const val EXIT_IP_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+    private const val EXIT_COUNTRY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
     private const val SCORE_NETWORK_STATUS_CACHE_MS = 15_000L
     private const val MAX_GEMINI_REJECTED_KEYS = 5000
     private const val PROFILE_RESULT_DB_RETRY_COUNT = 4
@@ -390,7 +390,7 @@ object AutoVpnManager {
         if (!autoRunning) lastDecisionReason?.let { parts += it }
         lastPingText()?.let { parts += it }
         candidateCountText(mode)?.let { parts += it }
-        lastExitIpText()?.let { parts += it }
+        lastExitCountryText()?.let { parts += it }
         parts += networkStatusText()
         return parts.joinToString(" | ")
     }
@@ -490,7 +490,7 @@ object AutoVpnManager {
             appendLine(app.getString(R.string.auto_vpn_diag_score, currentScore))
             appendLine("VIP cache: ${if (AutoProfileScoreStore.isVip(current, safeMode)) "yes" else "no"}")
             appendLine(app.getString(R.string.auto_vpn_diag_reserve, reserveCount(safeMode), reserveTarget()))
-            lastExitIpText()?.let { appendLine(it) }
+            lastExitCountryText()?.let { appendLine(it) }
             appendLine(app.getString(R.string.auto_vpn_diag_progress, autoFinished, autoTotal))
             appendLine(app.getString(R.string.auto_vpn_diag_failures, failures, failuresBeforeSwitch()))
             append(app.getString(R.string.auto_vpn_diag_quarantine, quarantine))
@@ -554,7 +554,7 @@ object AutoVpnManager {
             enabled && (SagerNet.started || DataStore.startedProfile > 0L) && currentName.isNotBlank() -> {
                 app.getString(R.string.auto_vpn_ready_address, currentName)
             }
-            enabled && hasDetailedAppStatus() -> cardStatusText(safeMode)
+            enabled && hasDetailedAppStatus() -> ""
             enabled -> app.getString(R.string.auto_vpn_enabled_short)
             else -> app.getString(R.string.auto_vpn_tap_to_start)
         }
@@ -608,15 +608,12 @@ object AutoVpnManager {
         if (autoRunning || briefStatus == app.getString(R.string.auto_vpn_notification_searching)) {
             return autoProgressNotificationText()
         }
-        val candidateStatus = candidateCountText()
         if (briefStatus == app.getString(R.string.auto_vpn_notification_checking) ||
             briefStatus == app.getString(R.string.auto_vpn_notification_switching)
         ) {
-            return listOfNotNull(notificationDetailStatus ?: notificationStatus ?: briefStatus, candidateStatus)
-                .joinToString(" | ")
+            return notificationDetailStatus ?: notificationStatus ?: briefStatus
         }
-        val status = notificationDetailStatus ?: notificationStatus ?: defaultText.toString()
-        return listOfNotNull(status, candidateStatus).joinToString(" | ")
+        return notificationDetailStatus ?: notificationStatus ?: defaultText.toString()
     }
 
     fun selectMode(mode: Int = MODE_ANY) {
@@ -640,13 +637,14 @@ object AutoVpnManager {
         val safeMode = sanitizeMode(DataStore.autoVpnMode)
         DataStore.autoVpnMode = safeMode
         DataStore.autoVpnEnabled = true
-        DiagnosticLog.critical(
-            "auto-vpn",
-            "start-from-vpn-button mode=$safeMode activeScan=${autoScanJob?.isActive == true} " +
-                    "${DiagnosticLog.stateSummary()}"
-        )
-        setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
         if (!isVpnRunningForAuto()) {
+            DiagnosticLog.beginAutoSearchSession("manual-vpn-button")
+            DiagnosticLog.critical(
+                "auto-vpn",
+                "start-from-vpn-button mode=$safeMode activeScan=${autoScanJob?.isActive == true} " +
+                        "${DiagnosticLog.stateSummary()}"
+            )
+            setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
             autoScanJob?.cancel()
             autoScanJob = null
             DataStore.autoVpnServiceStartRequested = false
@@ -657,6 +655,7 @@ object AutoVpnManager {
             return true
         }
         if (autoScanJob?.isActive == true) {
+            DiagnosticLog.event("auto-vpn", "start-from-vpn-button-ignored-active-scan mode=$safeMode")
             onFinishedWithoutServiceStart?.let { callback ->
                 val job = autoScanJob
                 runOnDefaultDispatcher {
@@ -668,6 +667,12 @@ object AutoVpnManager {
             }
             return true
         }
+        DiagnosticLog.beginAutoSearchSession("manual-vpn-button")
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "start-from-vpn-button mode=$safeMode activeScan=false ${DiagnosticLog.stateSummary()}"
+        )
+        setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
         autoScanJob?.cancel()
         autoScanJob = null
 
@@ -1732,10 +1737,10 @@ object AutoVpnManager {
             }
             val geoInfo = ExitIpGeoChecker.geoInfo()
             val countryCode = geoInfo?.countryCode
-            if (geoInfo != null) recordLastExitIp(profileId, geoInfo.ip)
+            recordLastExitCountry(profileId, geoInfo?.countryName)
             DiagnosticLog.event(
                 "auto-vpn",
-                "active-exit-country mode=$mode profile=$profileId ip=${geoInfo?.ip ?: "unknown"} " +
+                "active-exit-country mode=$mode profile=$profileId countryName=${geoInfo?.countryName ?: "unknown"} " +
                         "country=${countryCode ?: "unknown"}",
             )
             if (countryCode == null || countryCode == "RU") {
@@ -2204,7 +2209,7 @@ object AutoVpnManager {
                         )
                         if (countryCode == null || countryCode == "RU") {
                             throw IOException(
-                                if (countryCode == "RU") "Exit IP is in Russia" else "Exit IP country is unknown"
+                                if (countryCode == "RU") "Exit country is Russia" else "Exit country is unknown"
                             )
                         }
                     }
@@ -2971,51 +2976,53 @@ object AutoVpnManager {
     private fun scheduleExitIpRefresh(profileId: Long, mode: Int) {
         if (!isSameStartedAutoProfile(profileId, mode)) return
         val now = System.currentTimeMillis()
-        if (DataStore.autoVpnLastExitIpProfile == profileId &&
-            now - DataStore.autoVpnLastExitIpCheckedAt < EXIT_IP_REFRESH_INTERVAL_MS
+        if (DataStore.autoVpnLastExitCountryProfile == profileId &&
+            now - DataStore.autoVpnLastExitCountryCheckedAt < EXIT_COUNTRY_REFRESH_INTERVAL_MS
         ) return
         if (exitIpRefreshJob?.isActive == true) return
 
-        DataStore.autoVpnLastExitIpCheckedAt = now
-        DiagnosticLog.event("auto-vpn", "exit-ip-refresh-start mode=$mode profile=$profileId")
+        DataStore.autoVpnLastExitCountryCheckedAt = now
+        DiagnosticLog.event("auto-vpn", "exit-country-refresh-start mode=$mode profile=$profileId")
         exitIpRefreshJob = runOnDefaultDispatcher {
             try {
                 val geoInfo = ExitIpGeoChecker.geoInfo()
                 if (geoInfo != null && isSameStartedAutoProfile(profileId, mode)) {
-                    recordLastExitIp(profileId, geoInfo.ip)
+                    recordLastExitCountry(profileId, geoInfo.countryName)
                     DiagnosticLog.event(
                         "auto-vpn",
-                        "exit-ip-refresh-success mode=$mode profile=$profileId ip=${geoInfo.ip} " +
+                        "exit-country-refresh-success mode=$mode profile=$profileId country=${geoInfo.countryName ?: "unknown"} " +
                                 "country=${geoInfo.countryCode ?: "unknown"}",
                     )
                     notifyAutoStateChanged()
                 } else {
-                    DataStore.autoVpnLastExitIpCheckedAt =
-                        System.currentTimeMillis() - EXIT_IP_REFRESH_INTERVAL_MS + 60_000L
-                    DiagnosticLog.warn("auto-vpn", "exit-ip-refresh-no-result mode=$mode profile=$profileId")
+                    DataStore.autoVpnLastExitCountryCheckedAt =
+                        System.currentTimeMillis() - EXIT_COUNTRY_REFRESH_INTERVAL_MS + 60_000L
+                DiagnosticLog.warn("auto-vpn", "exit-country-refresh-no-result mode=$mode profile=$profileId")
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                DataStore.autoVpnLastExitIpCheckedAt =
-                    System.currentTimeMillis() - EXIT_IP_REFRESH_INTERVAL_MS + 60_000L
-                DiagnosticLog.warn("auto-vpn", "exit-ip-refresh-failed mode=$mode profile=$profileId", e)
+                DataStore.autoVpnLastExitCountryCheckedAt =
+                    System.currentTimeMillis() - EXIT_COUNTRY_REFRESH_INTERVAL_MS + 60_000L
+                DiagnosticLog.warn("auto-vpn", "exit-country-refresh-failed mode=$mode profile=$profileId", e)
             }
         }
     }
 
-    private fun recordLastExitIp(profileId: Long, ip: String) {
-        if (profileId <= 0L || ip.isBlank()) return
-        DataStore.autoVpnLastExitIp = ip
-        DataStore.autoVpnLastExitIpProfile = profileId
-        DataStore.autoVpnLastExitIpCheckedAt = System.currentTimeMillis()
+    private fun recordLastExitCountry(profileId: Long, country: String?) {
+        if (profileId <= 0L) return
+        DataStore.autoVpnLastExitCountry = country.orEmpty()
+        DataStore.autoVpnLastExitCountryProfile = profileId
+        DataStore.autoVpnLastExitCountryCheckedAt = System.currentTimeMillis()
     }
 
-    private fun lastExitIpText(): String? {
+    private fun lastExitCountryText(): String? {
         val activeProfile = DataStore.startedProfile
-        val ip = DataStore.autoVpnLastExitIp
-        return ip.takeIf { activeProfile > 0L && DataStore.autoVpnLastExitIpProfile == activeProfile }
-            ?.let { app.getString(R.string.auto_vpn_last_exit_ip, it) }
+        if (activeProfile <= 0L || DataStore.autoVpnLastExitCountryProfile != activeProfile) return null
+        val country = DataStore.autoVpnLastExitCountry.ifBlank {
+            app.getString(R.string.auto_vpn_unknown_country)
+        }
+        return app.getString(R.string.auto_vpn_last_exit_country, country)
     }
 
     private fun candidateCountText(mode: Int = DataStore.autoVpnMode): String? {
@@ -3520,10 +3527,7 @@ object AutoVpnManager {
         } else {
             autoFinished.coerceAtLeast(0)
         }
-        return listOf(
-            app.getString(R.string.connection_test_progress, finished, total),
-            reserveStatus(),
-        ).joinToString(" | ")
+        return app.getString(R.string.connection_test_progress, finished, total)
     }
 
     private fun progressUpdateIntervalMillis(): Long {

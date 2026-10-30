@@ -1016,6 +1016,7 @@ class MainActivity : ThemedActivity(),
 
     override fun onDestroy() {
         DiagnosticLog.critical("ui", "MainActivity.onDestroy state=$state ${DiagnosticLog.stateSummary()}")
+        if (isFinishing && !isChangingConfigurations) DiagnosticLog.endAutoSearchSessionAndClear()
         appUpdateDownloader?.cancel()
         appUpdateJob?.cancel()
         super.onDestroy()

@@ -17,6 +17,7 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import io.nekohasekai.sagernet.BuildConfig
+import io.nekohasekai.sagernet.LogLevel
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.ktx.app
@@ -71,6 +72,7 @@ object DiagnosticLog {
 
     fun init(process: String, mainProcess: Boolean) {
         processName = process.ifBlank { BuildConfig.APPLICATION_ID }
+        if (mainProcess) endAutoSearchSessionAndClear()
         initialized.set(true)
         critical(
             "app",
@@ -80,7 +82,39 @@ object DiagnosticLog {
                     "device=${oneLine("${Build.MANUFACTURER} ${Build.MODEL}")}"
         )
         event("app", "initial-state ${stateSummary()}")
-        if (mainProcess) startMainThreadWatchdog()
+    }
+
+    fun beginAutoSearchSession(source: String) {
+        if (DataStore.logLevel == LogLevel.NONE) {
+            endAutoSearchSessionAndClear()
+            return
+        }
+        synchronized(lock) {
+            val sessionId = nextSessionId()
+            DataStore.diagnosticJournalSessionId = -sessionId
+            clearJournalLocked()
+            DataStore.diagnosticJournalSessionId = sessionId
+        }
+        startMainThreadWatchdog()
+        critical("diagnostic", "auto-search-session-start source=${oneLine(source, 80)} ${stateSummary()}")
+    }
+
+    fun endAutoSearchSessionAndClear() {
+        synchronized(lock) {
+            DataStore.diagnosticJournalSessionId = -nextSessionId()
+            clearJournalLocked()
+        }
+    }
+
+    fun onLogLevelChanged(level: Int) {
+        if (level == LogLevel.NONE) endAutoSearchSessionAndClear()
+    }
+
+    private fun nextSessionId(): Long {
+        val current = DataStore.diagnosticJournalSessionId
+        val magnitude = if (current == Long.MIN_VALUE) Long.MAX_VALUE else kotlin.math.abs(current)
+        val now = System.currentTimeMillis()
+        return if (magnitude >= now && magnitude < Long.MAX_VALUE) magnitude + 1L else now
     }
 
     fun event(area: String, message: String) {
@@ -202,15 +236,23 @@ object DiagnosticLog {
         throwable: Throwable?,
         sync: Boolean,
     ) {
+        val sessionId = runCatching { DataStore.diagnosticJournalSessionId }.getOrDefault(0L)
+        if (!isSessionEnabled(sessionId)) return
         val entry = buildEntry(level, area, message, throwable)
         if (sync || !initialized.get()) {
-            writeNow(entry)
+            writeNow(entry, sessionId)
         } else {
             executor.execute {
-                writeNow(entry)
+                if (isSessionEnabled(sessionId)) writeNow(entry, sessionId)
             }
         }
     }
+
+    private fun isSessionEnabled(sessionId: Long): Boolean = runCatching {
+        sessionId > 0L &&
+                DataStore.logLevel != LogLevel.NONE &&
+                DataStore.diagnosticJournalSessionId == sessionId
+    }.getOrDefault(false)
 
     private fun buildEntry(
         level: String,
@@ -242,10 +284,11 @@ object DiagnosticLog {
         }
     }
 
-    private fun writeNow(entry: String) {
+    private fun writeNow(entry: String, sessionId: Long) {
         synchronized(lock) {
             runCatching {
                 withFileLock {
+                    if (!isSessionEnabled(sessionId)) return@withFileLock
                     val now = System.currentTimeMillis()
                     if (now - lastRetentionTrimAtMs >= RETENTION_TRIM_INTERVAL_MS) {
                         trimOlderEntriesLocked(now)
@@ -300,6 +343,12 @@ object DiagnosticLog {
                 }
             }
         }
+    }
+
+    private fun clearJournalLocked() {
+        runCatching { withFileLock { logFile.delete() } }
+            .onFailure { Log.w(TAG, "clear failed", it) }
+        lastRetentionTrimAtMs = 0L
     }
 
     private fun trimIfNeededLocked() {

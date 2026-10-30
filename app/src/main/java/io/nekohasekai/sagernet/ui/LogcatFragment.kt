@@ -28,8 +28,10 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import io.nekohasekai.sagernet.BuildConfig
+import io.nekohasekai.sagernet.LogLevel
 import io.nekohasekai.sagernet.R
 import io.nekohasekai.sagernet.SagerNet
+import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.databinding.LayoutLogcatBinding
 import io.nekohasekai.sagernet.ktx.*
 import io.nekohasekai.sagernet.utils.ColorUtils
@@ -95,19 +97,30 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         super.onDestroyView()
     }
 
+    override fun onResume() {
+        super.onResume()
+        updateJournalMenuTitle()
+        if (DataStore.logLevel == LogLevel.NONE && diagnosticJournalSelected) startLogcatStream()
+    }
+
     private fun updateJournalMenuTitle() {
+        val diagnosticAvailable = DataStore.logLevel != LogLevel.NONE
         toolbar.menu.findItem(R.id.action_toggle_diagnostic)?.apply {
             title = getString(if (diagnosticJournalSelected) R.string.view_logcat else R.string.view_diagnostic_journal)
             isChecked = diagnosticJournalSelected
+            isVisible = diagnosticAvailable
         }
+        toolbar.menu.findItem(R.id.action_send_diagnostic_log)?.isVisible = diagnosticAvailable
         toolbar.menu.findItem(R.id.action_clear_logcat)?.isVisible = !diagnosticJournalSelected
     }
 
     private fun stopLogStream() {
-        logcatProcess?.destroy()
+        val job = streamJob
+        val process = logcatProcess
         logcatProcess = null
-        streamJob?.cancel()
         streamJob = null
+        job?.cancel()
+        process?.destroy()
     }
 
     private fun startLogcatStream() {
@@ -115,10 +128,22 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         diagnosticJournalSelected = false
         updateJournalMenuTitle()
         binding.logsTextView.text = ""
-        streamJob = runOnIoDispatcher { streamingLog() }
+        streamJob = runOnIoDispatcher {
+            try {
+                streamingLog()
+            } catch (e: IOException) {
+                if (isActive && viewAvailable && !diagnosticJournalSelected) {
+                    DiagnosticLog.warn("logcat-view", "logcat stream stopped unexpectedly", e)
+                }
+            }
+        }
     }
 
     private fun startDiagnosticJournalStream() {
+        if (DataStore.logLevel == LogLevel.NONE) {
+            startLogcatStream()
+            return
+        }
         stopLogStream()
         diagnosticJournalSelected = true
         updateJournalMenuTitle()
@@ -210,7 +235,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val file = DiagnosticLog.logFile
         var offset = 0L
         var firstRead = true
-        while (isActive && diagnosticJournalSelected) {
+        while (isActive && diagnosticJournalSelected && DataStore.logLevel != LogLevel.NONE) {
             if (file.exists()) {
                 val length = file.length()
                 if (firstRead || length < offset) {
@@ -267,7 +292,11 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     override fun onMenuItemClick(item: MenuItem): Boolean {
         when (item.itemId) {
             R.id.action_toggle_diagnostic -> {
-                if (diagnosticJournalSelected) startLogcatStream() else startDiagnosticJournalStream()
+                if (DataStore.logLevel == LogLevel.NONE || diagnosticJournalSelected) {
+                    startLogcatStream()
+                } else {
+                    startDiagnosticJournalStream()
+                }
             }
             R.id.action_clear_logcat -> {
                 runOnIoDispatcher {
@@ -317,6 +346,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                 }
             }
             R.id.action_send_diagnostic_log -> {
+                if (DataStore.logLevel == LogLevel.NONE) return true
                 runOnDefaultDispatcher {
                     val logFile = DiagnosticLog.createShareFile()
                     onMainDispatcher {

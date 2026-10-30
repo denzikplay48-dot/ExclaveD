@@ -656,7 +656,8 @@
     <string name="auto_vpn_ready_address">Сейчас: %1$s</string>
     <string name="auto_vpn_reserve_count">Запас: %1$d/%2$d</string>
     <string name="auto_vpn_candidates_count">Кандидатов: %1$d/%2$d</string>
-    <string name="auto_vpn_last_exit_ip">Последний exit IP: %1$s</string>
+    <string name="auto_vpn_last_exit_country">Страна выхода: %1$s</string>
+    <string name="auto_vpn_unknown_country">неизвестна</string>
     <string name="view_diagnostic_journal">Диагностический журнал (реальное время)</string>
     <string name="view_logcat">Системный журнал Android</string>
     <string name="diagnostic_journal_empty">Записей диагностического журнала пока нет.</string>

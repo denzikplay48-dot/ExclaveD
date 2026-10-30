@@ -2804,6 +2804,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                 }
 
                 profileAddress.text = address
+                profileAddress.isGone = address.isBlank()
                 (trafficText.parent as View).isGone = (!showTraffic || proxyEntity.status <= 0) && address.isEmpty()
 
                 if (proxyEntity.status <= 0) {
@@ -2962,6 +2963,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                     address = ""
                 }
                 profileAddress.text = address
+                profileAddress.isGone = address.isBlank()
                 (trafficText.parent as View).isGone = (!showTraffic || proxyEntity.status <= 0) && address.isEmpty()
 
                 if (proxyEntity.status <= 0) {
@@ -3012,6 +3014,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                 profileName.text = proxyEntity.displayName()
                 profileType.text = proxyEntity.displayType()
                 profileAddress.text = proxyEntity.displayAddress()
+                profileAddress.isGone = proxyEntity.displayAddress().isBlank()
                 trafficText.isVisible = false
                 (trafficText.parent as View).isGone = false
 
