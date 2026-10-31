@@ -1408,7 +1408,6 @@ object AutoVpnManager {
                             countProgress,
                             throttle,
                             onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
-                            stopAfterWorking = (target - working.size).coerceAtLeast(1),
                         ),
                         safeMode,
                     )
@@ -1489,9 +1488,6 @@ object AutoVpnManager {
                             countProgress,
                             throttle,
                             onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
-                            stopAfterWorking = if (scanAllAvailable) null else {
-                                (target - reserveCount(safeMode)).coerceAtLeast(1)
-                            },
                         ),
                         safeMode,
                     )
@@ -2536,15 +2532,11 @@ object AutoVpnManager {
         countProgress: Boolean,
         throttle: AutoTestThrottle? = null,
         onWorkingResult: ((CandidateResult) -> Unit)? = null,
-        stopAfterWorking: Int? = null,
     ): List<CandidateResult> = coroutineScope {
         val parallel = DataStore.connectionTestParallel.coerceAtLeast(1)
         val semaphore = Semaphore(parallel)
         val throttleLock = Any()
         val outcomes = ConcurrentLinkedQueue<CandidateOutcome>()
-        val workingLimit = stopAfterWorking?.coerceAtLeast(1)
-        val workingLock = Any()
-        var workingCount = 0
         val jobs = ArrayList<Job>(candidates.size)
         for (profile in candidates) {
             jobs += launch(start = CoroutineStart.LAZY) {
@@ -2552,45 +2544,16 @@ object AutoVpnManager {
                     throttle?.waitForPause()
                     val outcome = testProfileOutcome(profile, mode)
                     if (!isActive) return@withPermit
-                    val hasWorkingResult = outcome.result != null
-                    val acceptedWorkingResult = if (hasWorkingResult) {
-                        synchronized(workingLock) {
-                            if (workingLimit == null || workingCount < workingLimit) {
-                                workingCount += 1
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                    } else {
-                        false
-                    }
-                    if (acceptedWorkingResult) outcome.result?.let { onWorkingResult?.invoke(it) }
+                    outcome.result?.let { onWorkingResult?.invoke(it) }
                     if (throttle != null) {
                         synchronized(throttleLock) {
                             throttle.record(outcome)
                         }
                     }
                     if (countProgress) {
-                        recordAutoTestResult(acceptedWorkingResult)
+                        recordAutoTestResult(outcome.result != null)
                     }
-                    outcomes += if (hasWorkingResult && !acceptedWorkingResult) {
-                        outcome.copy(result = null)
-                    } else {
-                        outcome
-                    }
-
-                    if (acceptedWorkingResult && workingLimit != null &&
-                        synchronized(workingLock) { workingCount >= workingLimit }
-                    ) {
-                        val pending = jobs.count { it.isActive }
-                        DiagnosticLog.critical(
-                            "auto-vpn",
-                            "candidate-batch-target-reached mode=$mode working=$workingCount target=$workingLimit " +
-                                    "batch=${candidates.size} pendingCancelled=$pending",
-                        )
-                        jobs.forEach { it.cancel() }
-                    }
+                    outcomes += outcome
                 }
             }
         }
