@@ -42,12 +42,13 @@ import io.nekohasekai.sagernet.utils.DiagnosticLog
 import io.nekohasekai.sagernet.utils.DefaultNetworkListener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -60,6 +61,7 @@ import java.net.URL
 import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 object AutoVpnManager {
 
@@ -1399,7 +1401,17 @@ object AutoVpnManager {
                     if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
                     if (testChunk.isEmpty()) continue
                     testedAnyInCycle = true
-                    val tested = sortCandidatesByScore(testCandidates(testChunk, safeMode, countProgress, throttle), safeMode)
+                    val tested = sortCandidatesByScore(
+                        testCandidates(
+                            testChunk,
+                            safeMode,
+                            countProgress,
+                            throttle,
+                            onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                            stopAfterWorking = (target - working.size).coerceAtLeast(1),
+                        ),
+                        safeMode,
+                    )
                     if (tested.isEmpty()) continue
 
                     rememberWorkingResults(safeMode, tested)
@@ -1470,7 +1482,19 @@ object AutoVpnManager {
                     if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
                     if (testChunk.isEmpty()) continue
                     testedAnyInCycle = true
-                    val tested = sortCandidatesByScore(testCandidates(testChunk, safeMode, countProgress, throttle), safeMode)
+                    val tested = sortCandidatesByScore(
+                        testCandidates(
+                            testChunk,
+                            safeMode,
+                            countProgress,
+                            throttle,
+                            onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                            stopAfterWorking = if (scanAllAvailable) null else {
+                                (target - reserveCount(safeMode)).coerceAtLeast(1)
+                            },
+                        ),
+                        safeMode,
+                    )
                     if (tested.isEmpty()) continue
 
                     rememberWorkingResults(safeMode, tested)
@@ -2511,27 +2535,67 @@ object AutoVpnManager {
         mode: Int,
         countProgress: Boolean,
         throttle: AutoTestThrottle? = null,
+        onWorkingResult: ((CandidateResult) -> Unit)? = null,
+        stopAfterWorking: Int? = null,
     ): List<CandidateResult> = coroutineScope {
         val parallel = DataStore.connectionTestParallel.coerceAtLeast(1)
         val semaphore = Semaphore(parallel)
         val throttleLock = Any()
-        val outcomes = candidates.map { profile ->
-            async {
+        val outcomes = ConcurrentLinkedQueue<CandidateOutcome>()
+        val workingLimit = stopAfterWorking?.coerceAtLeast(1)
+        val workingLock = Any()
+        var workingCount = 0
+        val jobs = ArrayList<Job>(candidates.size)
+        for (profile in candidates) {
+            jobs += launch(start = CoroutineStart.LAZY) {
                 semaphore.withPermit {
                     throttle?.waitForPause()
                     val outcome = testProfileOutcome(profile, mode)
+                    if (!isActive) return@withPermit
+                    val hasWorkingResult = outcome.result != null
+                    val acceptedWorkingResult = if (hasWorkingResult) {
+                        synchronized(workingLock) {
+                            if (workingLimit == null || workingCount < workingLimit) {
+                                workingCount += 1
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                    if (acceptedWorkingResult) outcome.result?.let { onWorkingResult?.invoke(it) }
                     if (throttle != null) {
                         synchronized(throttleLock) {
                             throttle.record(outcome)
                         }
                     }
                     if (countProgress) {
-                        recordAutoTestResult(outcome.result != null)
+                        recordAutoTestResult(acceptedWorkingResult)
                     }
-                    outcome
+                    outcomes += if (hasWorkingResult && !acceptedWorkingResult) {
+                        outcome.copy(result = null)
+                    } else {
+                        outcome
+                    }
+
+                    if (acceptedWorkingResult && workingLimit != null &&
+                        synchronized(workingLock) { workingCount >= workingLimit }
+                    ) {
+                        val pending = jobs.count { it.isActive }
+                        DiagnosticLog.critical(
+                            "auto-vpn",
+                            "candidate-batch-target-reached mode=$mode working=$workingCount target=$workingLimit " +
+                                    "batch=${candidates.size} pendingCancelled=$pending",
+                        )
+                        jobs.forEach { it.cancel() }
+                    }
                 }
             }
-        }.awaitAll()
+        }
+        jobs.forEach { it.start() }
+        jobs.joinAll()
         outcomes.mapNotNull { it.result }
     }
 
