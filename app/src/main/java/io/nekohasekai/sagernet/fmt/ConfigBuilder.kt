@@ -38,6 +38,7 @@ import io.nekohasekai.sagernet.TunImplementation
 import io.nekohasekai.sagernet.bg.VpnService
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.database.ProxyEntity
+import io.nekohasekai.sagernet.database.RuleEntity
 import io.nekohasekai.sagernet.database.SagerDatabase
 import io.nekohasekai.sagernet.fmt.V2rayBuildResult.IndexEntity
 import io.nekohasekai.sagernet.fmt.anytls.AnyTLSBean
@@ -147,6 +148,25 @@ const val TAG_DNS_DIRECT = "dns-direct"
 
 const val LOCALHOST = "127.0.0.1"
 const val LOCALHOST6 = "::1"
+
+private object CandidateDnsRulesCache {
+    private const val CACHE_MS = 5_000L
+    @Volatile private var loadedAt = 0L
+    @Volatile private var rules: List<RuleEntity> = emptyList()
+
+    fun get(): List<RuleEntity> {
+        val now = System.currentTimeMillis()
+        if (now - loadedAt < CACHE_MS) return rules
+        synchronized(this) {
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - loadedAt >= CACHE_MS) {
+                rules = SagerDatabase.rulesDao.enabledRules().toList()
+                loadedAt = currentTime
+            }
+            return rules
+        }
+    }
+}
 
 class V2rayBuildResult(
     var config: String,
@@ -262,6 +282,7 @@ fun buildV2RayConfig(
     val routeMode = DataStore.routeMode
     val proxies = proxy.resolveChain()
     val extraRules = if (forTest || routeMode != RouteMode.RULE) listOf() else SagerDatabase.rulesDao.enabledRules()
+    val dnsRules = if (forTest && routeMode == RouteMode.RULE) CandidateDnsRulesCache.get() else extraRules
     val extraProxies = if (forTest) mapOf() else SagerDatabase.proxyDao.getEntities(extraRules.mapNotNull { rule ->
         rule.outbound.takeIf { it > 0 && it != proxy.id }
     }.toHashSet().toList()).associate {
@@ -2567,11 +2588,11 @@ fun buildV2RayConfig(
         if (DataStore.enableDnsRouting) {
             val directDNSDomainList = DataStore.experimentalFlagsProperties.getProperty("directDNSDomainList")
             if (directDNSDomainList != null) {
-                if (!forTest && DataStore.routeMode == RouteMode.RULE) {
+                if (DataStore.routeMode == RouteMode.RULE) {
                     bypassDomain.addAll(directDNSDomainList.split(","))
                 }
             } else {
-                for (bypassRule in extraRules.filter { it.isBypassRule() }) {
+                for (bypassRule in dnsRules.filter { it.isBypassRule() }) {
                     if (bypassRule.domains.isNotEmpty()) {
                         bypassDomain.addAll(bypassRule.domains.listByLineOrComma())
                     }
@@ -2579,11 +2600,11 @@ fun buildV2RayConfig(
             }
             val remoteDNSDomainList = DataStore.experimentalFlagsProperties.getProperty("remoteDNSDomainList")
             if (remoteDNSDomainList != null) {
-                if (!forTest && DataStore.routeMode == RouteMode.RULE) {
+                if (DataStore.routeMode == RouteMode.RULE) {
                     proxyDomain.addAll(remoteDNSDomainList.split(","))
                 }
             } else {
-                for (proxyRule in extraRules.filter { it.isProxyRule() }) {
+                for (proxyRule in dnsRules.filter { it.isProxyRule() }) {
                     if (proxyRule.domains.isNotEmpty()) {
                         proxyDomain.addAll(proxyRule.domains.listByLineOrComma())
                     }

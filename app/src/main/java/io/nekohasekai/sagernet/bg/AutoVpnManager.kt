@@ -105,6 +105,7 @@ object AutoVpnManager {
     private const val TRAFFIC_CONFIRM_DELAY_MS = 5_000L
     private const val TRAFFIC_DIAGNOSTIC_COOLDOWN_MS = 60_000L
     private const val EXIT_COUNTRY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+    private const val EXIT_COUNTRY_CONFIRM_DELAY_MS = 30_000L
     private const val DIRECT_NETWORK_RETRY_DELAY_MS = 45_000L
     private const val DIRECT_NETWORK_CHECK_TIMEOUT_MS = 4_000L
     private const val DIRECT_NETWORK_CONNECT_TIMEOUT_MS = 3_000
@@ -231,6 +232,7 @@ object AutoVpnManager {
 
     private val switchMutex = Mutex()
     private val scoreNetworkCheckMutex = Mutex()
+    private val exitCountryCheckMutex = Mutex()
     private val reserveUpdateLock = Any()
     private val candidateTestExecutor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "exclaved-auto-candidate-test").apply { isDaemon = true }
@@ -240,11 +242,14 @@ object AutoVpnManager {
     private val candidateTestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val failedUntil = ConcurrentHashMap<Long, Long>()
     private val workingCache = ConcurrentHashMap<Long, CachedWorking>()
+    private val activeTrafficSpeedBaselines = mutableMapOf<Long, Long>()
+    private val activeTrafficSpeedLock = Any()
     private val workingPools = mutableMapOf<Int, List<Long>>()
     private val hydratedReserveModes = mutableSetOf<Int>()
     private val manualCycleIds = mutableMapOf<Int, LinkedHashSet<Long>>()
     private val scannedIds = mutableMapOf<Int, LinkedHashSet<Long>>()
     private val lastScannedIdsPersistAt = mutableMapOf<Int, Long>()
+    private val storedReserveSnapshots = mutableMapOf<Int, String>()
     private val exitCountryRejectedWriteLock = Any()
     @Volatile
     private var cachedGeminiRejectedKeys: Set<String>? = null
@@ -444,9 +449,9 @@ object AutoVpnManager {
     fun cardStatusText(mode: Int = DataStore.autoVpnMode): String {
         syncVisibleStateFromStore()
         val parts = ArrayList<String>()
-        parts += notificationDetailStatus
-            ?: notificationStatus
-            ?: app.getString(R.string.auto_vpn_notification_running, modeName(mode))
+        val status = listOfNotNull(notificationDetailStatus, notificationStatus)
+            .firstOrNull { !isInitialCandidateCountStatus(it, mode) }
+        parts += status ?: app.getString(R.string.auto_vpn_status_selected, modeName(mode))
         if (!autoRunning) lastDecisionReason?.let { parts += it }
         lastPingText()?.let { parts += it }
         candidateCountText(mode)?.let { parts += it }
@@ -1766,7 +1771,7 @@ object AutoVpnManager {
         if (!isSameStartedAutoProfile(profileId, safeMode)) return
 
         DiagnosticLog.event("auto-vpn", "traffic-signal profile=$profileId mode=$safeMode")
-        val first = checkActiveProfile()
+        val first = checkActiveProfile(verifyTrafficPath = true)
         if (first.exitCountryRejected && isSameStartedAutoProfile(profileId, safeMode)) {
             confirmActiveProfileFailure(profileId, safeMode, "exit-country-rejected")
             return
@@ -1785,7 +1790,7 @@ object AutoVpnManager {
         delay(TRAFFIC_CONFIRM_DELAY_MS)
         if (!isSameStartedAutoProfile(profileId, safeMode)) return
 
-        val second = checkActiveProfile(periodicRetry = true)
+        val second = checkActiveProfile(periodicRetry = true, verifyTrafficPath = true)
         if (second.exitCountryRejected && isSameStartedAutoProfile(profileId, safeMode)) {
             confirmActiveProfileFailure(profileId, safeMode, "exit-country-rejected")
             return
@@ -1951,9 +1956,7 @@ object AutoVpnManager {
                 delay(delayMs)
                 if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
                 setAutoNotificationStatus(mode, R.string.auto_vpn_status_verifying_connected, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
-                if (index == 0 && requiresExitCountryCheck(mode) &&
-                    !verifyConnectedExitCountry(profileId, mode)
-                ) {
+                if (index == 0 && !verifyConnectedExitCountry(profileId, mode)) {
                     switchAfterPostConnectFailures(profileId, mode)
                     return@runOnDefaultDispatcher
                 }
@@ -1961,9 +1964,31 @@ object AutoVpnManager {
                     profileId,
                     mode,
                     urlTester,
-                    scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
+                    scoreEvent = AutoProfileScoreStore.Event.CANDIDATE,
                 )
                 if (ping != null && ping <= badPingMillis()) {
+                    val traffic = verifyRealTrafficPath(profileId, mode, "post-connect")
+                    if (traffic == null) {
+                        if (!hasDirectInternet()) {
+                            deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                            return@runOnDefaultDispatcher
+                        }
+                        recordActiveTrafficFailure(
+                            profileId,
+                            mode,
+                            AutoProfileScoreStore.Event.POST_CONNECT,
+                            "post-connect",
+                        )
+                        switchAfterPostConnectFailures(profileId, mode)
+                        return@runOnDefaultDispatcher
+                    }
+                    recordActiveTrafficSuccess(
+                        profileId,
+                        mode,
+                        traffic,
+                        scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
+                        scoreRecovery = true,
+                    )
                     failures = 0
                     setAutoReadyStatus(mode)
                     return@runOnDefaultDispatcher
@@ -1977,6 +2002,29 @@ object AutoVpnManager {
             }
 
             if (connectFailures >= POST_CONNECT_VERIFY_DELAYS_MS.size) {
+                val traffic = verifyRealTrafficPath(profileId, mode, "post-connect-fallback")
+                if (traffic != null) {
+                    recordActiveTrafficSuccess(
+                        profileId,
+                        mode,
+                        traffic,
+                        scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
+                        scoreRecovery = true,
+                    )
+                    failures = 0
+                    setAutoReadyStatus(mode)
+                    return@runOnDefaultDispatcher
+                }
+                if (!hasDirectInternet()) {
+                    deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                    return@runOnDefaultDispatcher
+                }
+                recordActiveTrafficFailure(
+                    profileId,
+                    mode,
+                    AutoProfileScoreStore.Event.POST_CONNECT,
+                    "post-connect-fallback",
+                )
                 switchAfterPostConnectFailures(profileId, mode)
             }
         }
@@ -1989,33 +2037,27 @@ object AutoVpnManager {
                 DataStore.startedProfile == profileId
     }
 
-    private suspend fun checkActiveProfile(periodicRetry: Boolean = failures > 0): ActiveCheckResult {
+    private suspend fun checkActiveProfile(
+        periodicRetry: Boolean = failures > 0,
+        verifyTrafficPath: Boolean = false,
+    ): ActiveCheckResult {
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
         val urlTester = activeUrlTester ?: return ActiveCheckResult(checkCurrentProfileBad())
         if (profileId <= 0L || !isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
+        setAutoStatus(mode, R.string.auto_vpn_status_checking_active)
         if (requiresExitCountryCheck(mode)) {
             val profile = SagerDatabase.proxyDao.getById(profileId) ?: return ActiveCheckResult(true)
             if (hasExcludedGlobeMarker(profile)) {
                 AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.PERIODIC)
                 return ActiveCheckResult(true, exitCountryRejected = true)
             }
-            val geoInfo = ExitIpGeoChecker.geoInfo()
-            val countryCode = geoInfo?.countryCode
-            recordLastExitCountry(profileId, geoInfo?.countryName)
-            DiagnosticLog.event(
-                "auto-vpn",
-                "active-exit-country mode=$mode profile=$profileId countryName=${geoInfo?.countryName ?: "unknown"} " +
-                        "country=${countryCode ?: "unknown"}",
-            )
-            if (countryCode == null || countryCode == "RU") {
-                rememberExitCountryRejectedProfiles(listOf(profileId), "active-check")
-                AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.PERIODIC)
+            if (!verifyActiveExitCountry(profile, mode, "active-check", AutoProfileScoreStore.Event.PERIODIC)) {
+                if (!isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
                 return ActiveCheckResult(true, exitCountryRejected = true)
             }
         }
 
-        setAutoStatus(mode, R.string.auto_vpn_status_checking_active)
         val ping = testStartedConnection(
             profileId,
             mode,
@@ -2024,14 +2066,128 @@ object AutoVpnManager {
             scoreEvent = AutoProfileScoreStore.Event.PERIODIC,
             scoreRetry = periodicRetry,
         )
-        if (ping == null) {
-            return ActiveCheckResult(true)
+        val pingFailed = ping == null || ping > badPingMillis()
+        if (verifyTrafficPath || pingFailed) {
+            val traffic = verifyRealTrafficPath(profileId, mode, "active-check")
+                ?: return ActiveCheckResult(true, ping)
+            recordActiveTrafficSuccess(
+                profileId,
+                mode,
+                traffic,
+                scoreEvent = AutoProfileScoreStore.Event.PERIODIC,
+                scoreRecovery = pingFailed,
+            )
+            if (ping != null && ping > badPingMillis()) return ActiveCheckResult(true, ping)
+            setAutoReadyStatus(mode)
+            return ActiveCheckResult(false, ping ?: traffic.latencyMillis)
         }
-        if (ping > badPingMillis()) {
-            return ActiveCheckResult(true, ping)
-        }
+        if (ping == null) return ActiveCheckResult(true)
         setAutoReadyStatus(mode)
         return ActiveCheckResult(false)
+    }
+
+    private suspend fun verifyRealTrafficPath(
+        profileId: Long,
+        mode: Int,
+        source: String,
+    ): ActiveVpnTrafficProbe.Result? {
+        if (!isSameStartedAutoProfile(profileId, mode)) return null
+        val first = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL)
+        val firstSlow = recordTrafficSpeedSample(profileId, first)
+        logActiveTrafficProbe(profileId, mode, source, 1, first, firstSlow)
+        if (first.hasTraffic && first.download.complete && !firstSlow) return first
+
+        delay(TRAFFIC_CONFIRM_DELAY_MS)
+        if (!isSameStartedAutoProfile(profileId, mode)) return first.takeIf { it.hasTraffic }
+        val second = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL)
+        val secondSlow = recordTrafficSpeedSample(profileId, second)
+        logActiveTrafficProbe(profileId, mode, source, 2, second, secondSlow)
+        return when {
+            second.hasTraffic -> second
+            first.hasTraffic -> first
+            else -> null
+        }
+    }
+
+    private fun recordTrafficSpeedSample(
+        profileId: Long,
+        result: ActiveVpnTrafficProbe.Result,
+    ): Boolean {
+        val download = result.download
+        val speed = download.bytesPerSecond ?: return true
+        if (!download.complete) return true
+        return synchronized(activeTrafficSpeedLock) {
+            val baseline = activeTrafficSpeedBaselines[profileId]
+            if (baseline == null) {
+                activeTrafficSpeedBaselines[profileId] = speed
+                false
+            } else {
+                if (speed > baseline) activeTrafficSpeedBaselines[profileId] = speed
+                speed < baseline / 5L
+            }
+        }
+    }
+
+    private fun logActiveTrafficProbe(
+        profileId: Long,
+        mode: Int,
+        source: String,
+        attempt: Int,
+        result: ActiveVpnTrafficProbe.Result,
+        lowSpeedSignal: Boolean,
+    ) {
+        val endpoints = result.endpoints.joinToString(",") {
+            "${it.host}:${it.responseCode ?: it.error ?: "error"}/${it.elapsedMillis}ms/${it.success}"
+        }
+        val transfer = result.download
+        DiagnosticLog.event(
+            "auto-vpn",
+            "active-traffic-probe source=$source mode=$mode profile=$profileId attempt=$attempt " +
+                    "reachable=${result.hasTraffic} endpoints=[$endpoints] " +
+                    "download=${transfer.downloadedBytes}/${transfer.expectedBytes} " +
+                    "ttfbMs=${transfer.firstByteMillis ?: -1} elapsedMs=${transfer.elapsedMillis} " +
+                    "bytesPerSecond=${transfer.bytesPerSecond ?: -1} complete=${transfer.complete} " +
+                    "lowSpeedSignal=$lowSpeedSignal",
+        )
+    }
+
+    private fun recordActiveTrafficSuccess(
+        profileId: Long,
+        mode: Int,
+        result: ActiveVpnTrafficProbe.Result,
+        scoreEvent: AutoProfileScoreStore.Event = AutoProfileScoreStore.Event.POST_CONNECT,
+        scoreRecovery: Boolean = false,
+    ) {
+        val profile = SagerDatabase.proxyDao.getById(profileId) ?: return
+        if (profile.status == 3) {
+            result.latencyMillis?.let {
+                profile.ping = it
+                recordLastPing(it)
+            }
+        }
+        profile.status = 1
+        profile.error = null
+        saveProfileTestResultSafely(profile, "active-traffic-confirmed")
+        if (scoreRecovery) {
+            AutoProfileScoreStore.recordSuccess(profile, mode, scoreEvent, afterFailure = true)
+        }
+        val workingPing = profile.ping.takeIf { it > 0 } ?: result.latencyMillis ?: 1
+        rememberWorkingResults(mode, listOf(CandidateResult(profile, workingPing)))
+        scheduleExitIpRefresh(profileId, mode)
+        notifyAutoStateChanged()
+    }
+
+    private fun recordActiveTrafficFailure(
+        profileId: Long,
+        mode: Int,
+        scoreEvent: AutoProfileScoreStore.Event,
+        source: String,
+    ) {
+        val profile = SagerDatabase.proxyDao.getById(profileId) ?: return
+        profile.status = 3
+        profile.error = "Active VPN traffic probe failed"
+        saveProfileTestResultSafely(profile, "active-traffic-failed-$source")
+        AutoProfileScoreStore.recordFailure(profile, mode, scoreEvent)
     }
 
     private suspend fun testStartedConnection(
@@ -2077,23 +2233,100 @@ object AutoVpnManager {
 
     private suspend fun verifyConnectedExitCountry(profileId: Long, mode: Int): Boolean {
         val profile = SagerDatabase.proxyDao.getById(profileId) ?: return false
-        if (hasExcludedGlobeMarker(profile)) return false
-        val geoInfo = ExitIpGeoChecker.geoInfo()
-        val countryCode = geoInfo?.countryCode
-        recordLastExitCountry(profileId, geoInfo?.countryName)
+        if (requiresExitCountryCheck(mode) && hasExcludedGlobeMarker(profile)) return false
+        return verifyActiveExitCountry(profile, mode, "post-connect", AutoProfileScoreStore.Event.POST_CONNECT)
+    }
+
+    private suspend fun verifyActiveExitCountry(
+        profile: ProxyEntity,
+        mode: Int,
+        source: String,
+        scoreEvent: AutoProfileScoreStore.Event,
+    ): Boolean = exitCountryCheckMutex.withLock {
+        val profileId = profile.id
+        if (!isSameStartedAutoProfile(profileId, mode)) return@withLock false
+
+        val first = queryProfileExitGeoInfo(profile, mode)
+        val firstCode = first?.countryCode
         DiagnosticLog.event(
             "auto-vpn",
-            "post-connect-exit-country mode=$mode profile=$profileId " +
-                    "countryName=${geoInfo?.countryName ?: "unknown"} country=${countryCode ?: "unknown"}",
+            "exit-country-check source=$source attempt=1 mode=$mode profile=$profileId " +
+                    "countryName=${first?.countryName ?: "unknown"} country=${firstCode ?: "unknown"}",
         )
-        if (countryCode != null && countryCode != "RU") return true
+        if (!requiresExitCountryCheck(mode) || (firstCode != null && firstCode != "RU")) {
+            recordLastExitCountry(profileId, first?.countryName)
+            forgetExitCountryRejectedProfile(profile, "$source-valid")
+            notifyAutoStateChanged()
+            return@withLock true
+        }
 
-        rememberExitCountryRejectedProfiles(listOf(profileId), "post-connect")
-        AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.POST_CONNECT)
+        DiagnosticLog.event(
+            "auto-vpn",
+            "exit-country-confirmation-wait source=$source mode=$mode profile=$profileId " +
+                    "delayMs=$EXIT_COUNTRY_CONFIRM_DELAY_MS",
+        )
+        delay(EXIT_COUNTRY_CONFIRM_DELAY_MS)
+        if (!isSameStartedAutoProfile(profileId, mode)) return@withLock false
+
+        val second = queryProfileExitGeoInfo(profile, mode)
+        val secondCode = second?.countryCode
+        recordLastExitCountry(profileId, second?.countryName)
+        DiagnosticLog.event(
+            "auto-vpn",
+            "exit-country-check source=$source attempt=2 mode=$mode profile=$profileId " +
+                    "countryName=${second?.countryName ?: "unknown"} country=${secondCode ?: "unknown"}",
+        )
+        notifyAutoStateChanged()
+
+        if (secondCode != null && secondCode != "RU") {
+            forgetExitCountryRejectedProfile(profile, "$source-confirmed-valid")
+            DiagnosticLog.event(
+                "auto-vpn",
+                "exit-country-confirmation-recovered source=$source mode=$mode profile=$profileId " +
+                        "first=${firstCode ?: "unknown"} second=$secondCode",
+            )
+            return@withLock true
+        }
+
+        rememberExitCountryRejectedProfiles(listOf(profileId), "$source-confirmed")
+        AutoProfileScoreStore.recordFailure(profile, mode, scoreEvent)
         profile.status = 3
-        profile.error = if (countryCode == "RU") "Exit country is Russia" else "Exit country is unknown"
-        saveProfileTestResultSafely(profile, "post-connect-exit-country-rejected")
-        return false
+        profile.error = if (secondCode == "RU") "Exit country is Russia" else "Exit country is unknown"
+        saveProfileTestResultSafely(profile, "exit-country-confirmed-rejected")
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "exit-country-confirmed-rejected source=$source profile=$profileId mode=$mode " +
+                    "first=${firstCode ?: "unknown"} second=${secondCode ?: "unknown"}",
+        )
+        false
+    }
+
+    private suspend fun queryProfileExitGeoInfo(
+        profile: ProxyEntity,
+        mode: Int,
+    ): ExitIpGeoChecker.GeoInfo? {
+        val instance = V2RayTestInstance(
+            profile,
+            ExitIpGeoChecker.GEOIP_URL,
+            DataStore.connectionTestTimeoutSeconds.coerceAtLeast(1) * 1000,
+            protectPath = protectPathForTests(),
+            enableHttpProxy = true,
+        )
+        return try {
+            instance.startForExitIpCheck()
+            instance.exitIpGeoInfo()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.warn(
+                "auto-vpn",
+                "profile-exit-geoip-failed mode=$mode profile=${profile.id}",
+                e,
+            )
+            null
+        } finally {
+            instance.close()
+        }
     }
 
     private suspend fun switchAfterPostConnectFailures(profileId: Long, mode: Int) {
@@ -2346,6 +2579,7 @@ object AutoVpnManager {
             val now = System.currentTimeMillis()
             results.forEach {
                 workingCache[it.profile.id] = CachedWorking(it.ping, now)
+                failedUntil.remove(it.profile.id)
             }
             val activeIds = currentProfileIds().toSet()
             val manualIds = manualCycleIds[safeMode].orEmpty()
@@ -2430,7 +2664,11 @@ object AutoVpnManager {
             candidateTestScope.launch {
                 semaphore.withPermit {
                     throttle?.waitForPause()
-                    val outcome = testProfileOutcome(profile, mode)
+                    val outcome = testProfileOutcome(
+                        profile,
+                        mode,
+                        verifyExitCountry = requiresExitCountryCheck(mode),
+                    )
                     // A native test can finish after its batch has already selected a
                     // candidate. Do not let that stale tail mutate live scan progress.
                     if (!isActive) return@withPermit
@@ -2746,6 +2984,20 @@ object AutoVpnManager {
             DiagnosticLog.critical(
                 "auto-vpn",
                 "exit-country-rejected-persisted reason=$reason profiles=${profiles.map { it.id }} keys=${keys.size}",
+            )
+        }
+    }
+
+    private fun forgetExitCountryRejectedProfile(profile: ProxyEntity, reason: String) {
+        val key = profileRejectKey(profile) ?: return
+        synchronized(exitCountryRejectedWriteLock) {
+            val keys = LinkedHashSet(exitCountryRejectedKeys())
+            if (!keys.remove(key)) return
+            DataStore.autoVpnExitCountryRejectedKeys = keys
+            updateExitCountryRejectedCache(keys, bumpExitCountryRejectedRevision())
+            DiagnosticLog.event(
+                "auto-vpn",
+                "exit-country-rejection-cleared reason=$reason profile=${profile.id} keys=${keys.size}",
             )
         }
     }
@@ -3324,15 +3576,18 @@ object AutoVpnManager {
     }
 
     private fun clearReserveCounts() {
-        DataStore.autoVpnReserveCountAny = 0
-        DataStore.autoVpnReserveCountNonRu = 0
-        DataStore.autoVpnReserveCountGemini = 0
-        DataStore.autoVpnReserveIdsAny = ""
-        DataStore.autoVpnReserveIdsNonRu = ""
-        DataStore.autoVpnReserveIdsGemini = ""
-        synchronized(workingPools) {
-            workingPools.clear()
-            hydratedReserveModes.clear()
+        synchronized(reserveUpdateLock) {
+            DataStore.autoVpnReserveCountAny = 0
+            DataStore.autoVpnReserveCountNonRu = 0
+            DataStore.autoVpnReserveCountGemini = 0
+            DataStore.autoVpnReserveIdsAny = ""
+            DataStore.autoVpnReserveIdsNonRu = ""
+            DataStore.autoVpnReserveIdsGemini = ""
+            synchronized(workingPools) {
+                workingPools.clear()
+                hydratedReserveModes.clear()
+                storedReserveSnapshots.clear()
+            }
         }
     }
 
@@ -3350,28 +3605,25 @@ object AutoVpnManager {
         return count
     }
 
-    private fun reserveProfileIds(mode: Int = DataStore.autoVpnMode): List<Long> {
+    private fun reserveProfileIds(
+        mode: Int = DataStore.autoVpnMode,
+        refreshAttempt: Int = 0,
+    ): List<Long> = synchronized(reserveUpdateLock) {
         val safeMode = sanitizeMode(mode)
-        ensureReservePoolLoaded(safeMode)
+        val storedSnapshot = ensureReservePoolLoaded(safeMode)
         val activeIds = currentProfileIds().toSet()
-        val manualIds = manualCycleIds[safeMode].orEmpty()
         val retained = LinkedHashSet<Long>()
         val ids = synchronized(workingPools) {
             workingPools[safeMode].orEmpty().toList()
         }
 
         for (id in ids) {
-            if (id <= 0L || id in activeIds || id in manualIds || isMarkedFailed(id)) {
+            if (id <= 0L || id in activeIds) {
                 workingCache.remove(id)
                 continue
             }
             val profile = SagerDatabase.proxyDao.getById(id)
             if (profile == null || !profileAllowed(profile, safeMode)) {
-                workingCache.remove(id)
-                continue
-            }
-            val cached = workingCache[id]
-            if (cached != null && System.currentTimeMillis() - cached.at > RECENT_WORKING_TTL_MS) {
                 workingCache.remove(id)
                 continue
             }
@@ -3381,42 +3633,66 @@ object AutoVpnManager {
         synchronized(workingPools) {
             workingPools[safeMode] = retained.toList()
         }
-        persistReserveIds(safeMode, retained)
-        return retained.toList()
-    }
-
-    private fun ensureReservePoolLoaded(mode: Int) {
-        val safeMode = sanitizeMode(mode)
-        synchronized(workingPools) {
-            if (!hydratedReserveModes.add(safeMode)) return
-            workingPools[safeMode] = storedReserveIds(safeMode)
+        if (!persistReserveIds(safeMode, retained, storedSnapshot)) {
+            DiagnosticLog.event("auto-vpn", "reserve-refresh-raced mode=$safeMode attempt=$refreshAttempt")
+            if (refreshAttempt < 3) return@synchronized reserveProfileIds(safeMode, refreshAttempt + 1)
         }
+        retained.toList()
     }
 
-    private fun storedReserveIds(mode: Int): List<Long> {
-        val encoded = when (sanitizeMode(mode)) {
-            MODE_NON_RU -> DataStore.autoVpnReserveIdsNonRu
-            MODE_GEMINI -> DataStore.autoVpnReserveIdsGemini
-            else -> DataStore.autoVpnReserveIdsAny
+    private fun ensureReservePoolLoaded(mode: Int): String {
+        val safeMode = sanitizeMode(mode)
+        val encoded = storedReserveIdsEncoded(safeMode)
+        synchronized(workingPools) {
+            if (safeMode in hydratedReserveModes && storedReserveSnapshots[safeMode] == encoded) return encoded
+            hydratedReserveModes.add(safeMode)
+            workingPools[safeMode] = decodeStoredReserveIds(encoded)
+            storedReserveSnapshots[safeMode] = encoded
         }
         return encoded
-            .split(',')
-            .mapNotNull { it.toLongOrNull() }
-            .filter { it > 0L }
-            .distinct()
     }
 
-    private fun persistReserveIds(mode: Int, profileIds: Collection<Long>) {
+    private fun storedReserveIdsEncoded(mode: Int): String = when (sanitizeMode(mode)) {
+        MODE_NON_RU -> DataStore.autoVpnReserveIdsNonRu
+        MODE_GEMINI -> DataStore.autoVpnReserveIdsGemini
+        else -> DataStore.autoVpnReserveIdsAny
+    }
+
+    private fun decodeStoredReserveIds(encoded: String): List<Long> = encoded
+        .split(',')
+        .mapNotNull { it.toLongOrNull() }
+        .filter { it > 0L }
+        .distinct()
+
+    private fun persistReserveIds(
+        mode: Int,
+        profileIds: Collection<Long>,
+        expectedStoredSnapshot: String,
+    ): Boolean {
+        val safeMode = sanitizeMode(mode)
+        if (storedReserveIdsEncoded(safeMode) != expectedStoredSnapshot) return false
         val encoded = profileIds
             .asSequence()
             .filter { it > 0L }
             .distinct()
             .joinToString(",")
-        when (sanitizeMode(mode)) {
+        if (encoded == expectedStoredSnapshot) {
+            synchronized(workingPools) {
+                hydratedReserveModes.add(safeMode)
+                storedReserveSnapshots[safeMode] = encoded
+            }
+            return true
+        }
+        when (safeMode) {
             MODE_NON_RU -> DataStore.autoVpnReserveIdsNonRu = encoded
             MODE_GEMINI -> DataStore.autoVpnReserveIdsGemini = encoded
             else -> DataStore.autoVpnReserveIdsAny = encoded
         }
+        synchronized(workingPools) {
+            hydratedReserveModes.add(safeMode)
+            storedReserveSnapshots[safeMode] = encoded
+        }
+        return true
     }
 
     private fun storedScannedIds(mode: Int): LinkedHashSet<Long> {
@@ -3688,20 +3964,31 @@ object AutoVpnManager {
         DiagnosticLog.event("auto-vpn", "exit-country-refresh-start mode=$mode profile=$profileId")
         exitIpRefreshJob = runOnDefaultDispatcher {
             try {
-                val geoInfo = ExitIpGeoChecker.geoInfo()
-                if (geoInfo != null && isSameStartedAutoProfile(profileId, mode)) {
-                    recordLastExitCountry(profileId, geoInfo.countryName)
+                val profile = SagerDatabase.proxyDao.getById(profileId)
+                val verified = profile?.let {
+                    verifyActiveExitCountry(
+                        it,
+                        mode,
+                        "scheduled-refresh",
+                        AutoProfileScoreStore.Event.PERIODIC,
+                    )
+                } == true
+                if (verified && isSameStartedAutoProfile(profileId, mode)) {
                     DataStore.autoVpnLastExitCountryCheckedAt = System.currentTimeMillis()
                     DiagnosticLog.event(
                         "auto-vpn",
-                        "exit-country-refresh-success mode=$mode profile=$profileId country=${geoInfo.countryName ?: "unknown"} " +
-                                "country=${geoInfo.countryCode ?: "unknown"}",
+                        "exit-country-refresh-success mode=$mode profile=$profileId " +
+                                "country=${DataStore.autoVpnLastExitCountry.ifBlank { "unknown" }}",
                     )
                     notifyAutoStateChanged()
+                } else if (profile != null && requiresExitCountryCheck(mode) &&
+                    isSameStartedAutoProfile(profileId, mode)
+                ) {
+                    confirmActiveProfileFailure(profileId, mode, "exit-country-rejected")
                 } else {
                     DataStore.autoVpnLastExitCountryCheckedAt =
                         System.currentTimeMillis() - EXIT_COUNTRY_REFRESH_INTERVAL_MS + 60_000L
-                DiagnosticLog.warn("auto-vpn", "exit-country-refresh-no-result mode=$mode profile=$profileId")
+                    DiagnosticLog.warn("auto-vpn", "exit-country-refresh-no-result mode=$mode profile=$profileId")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -3734,6 +4021,23 @@ object AutoVpnManager {
         return reserveStatus(mode)
     }
 
+    private fun isInitialCandidateCountStatus(status: String, mode: Int): Boolean {
+        val firstMarker = 918_273
+        val secondMarker = 827_364
+        val template = app.getString(
+            R.string.auto_vpn_status_initial_found,
+            modeName(mode),
+            firstMarker,
+            secondMarker,
+        )
+        val prefix = template.substringBefore(firstMarker.toString())
+        val suffix = template.substringAfter(secondMarker.toString())
+        if (!status.startsWith(prefix)) return false
+        val countText = status.removePrefix(prefix).removeSuffix(suffix)
+        val counts = countText.split('/')
+        return counts.size == 2 && counts.all { it.toIntOrNull() != null }
+    }
+
     private fun updateAutoReserve(mode: Int = DataStore.autoVpnMode) {
         persistReserveCount(mode)
         persistAutoProgress()
@@ -3743,11 +4047,13 @@ object AutoVpnManager {
     private fun consumeReserve(profileId: Long, mode: Int = DataStore.autoVpnMode) {
         if (profileId <= 0L) return
         val safeMode = sanitizeMode(mode)
-        ensureReservePoolLoaded(safeMode)
-        synchronized(workingPools) {
-            workingPools[safeMode] = workingPools[safeMode].orEmpty().filterNot { it == profileId }
+        synchronized(reserveUpdateLock) {
+            ensureReservePoolLoaded(safeMode)
+            synchronized(workingPools) {
+                workingPools[safeMode] = workingPools[safeMode].orEmpty().filterNot { it == profileId }
+            }
+            updateAutoReserve(safeMode)
         }
-        updateAutoReserve(safeMode)
     }
 
     private fun markScanned(mode: Int, profileId: Long): Boolean {

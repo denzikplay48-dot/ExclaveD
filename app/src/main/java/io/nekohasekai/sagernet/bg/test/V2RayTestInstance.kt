@@ -54,6 +54,25 @@ class V2RayTestInstance(
     private var httpProxyPort: Int? = null
 
     suspend fun doTest(): Int = withContext(Dispatchers.IO) {
+        startCore()
+        Libsagernetcore.urlTest(v2rayPoint, "", link, timeout)
+    }
+
+    suspend fun startForExitIpCheck() = withContext(Dispatchers.IO) {
+        startCore()
+    }
+
+    suspend fun exitIpGeoInfo(): ExitIpGeoChecker.GeoInfo? {
+        val port = httpProxyPort ?: return null
+        val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
+        return ExitIpGeoChecker.geoInfo(proxy)
+    }
+
+    suspend fun exitIpCountryCode(): String? {
+        return exitIpGeoInfo()?.countryCode
+    }
+
+    private suspend fun startCore() {
         processes = GuardedProcessPool {
             Logs.w(it)
         }
@@ -62,13 +81,6 @@ class V2RayTestInstance(
         if (pluginConfigs.isNotEmpty()) {
             delay(500L)
         }
-        Libsagernetcore.urlTest(v2rayPoint, "", link, timeout)
-    }
-
-    suspend fun exitIpCountryCode(): String? {
-        val port = httpProxyPort ?: return null
-        val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
-        return ExitIpGeoChecker.countryCode(proxy)
     }
 
     @Volatile
