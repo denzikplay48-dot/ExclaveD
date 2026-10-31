@@ -3,6 +3,13 @@
     <string name="check_release_updates">Проверять обычные релизы</string>
     <string name="check_prerelease_updates">Проверять pre-release версии</string>
     <string name="check_prerelease_updates_summary">Только для этой версии приложения</string>
+    <string name="check_updates_now">Проверить обновления сейчас</string>
+    <string name="app_update_checking">Проверяю обновления на GitHub…</string>
+    <string name="app_update_check_in_progress">Проверка обновлений уже выполняется</string>
+    <string name="app_update_no_channels_enabled">Включите проверку обычных релизов или pre-release</string>
+    <string name="app_update_no_updates">Новых обновлений нет</string>
+    <string name="app_update_check_failed">Не удалось проверить обновления на GitHub</string>
+    <string name="app_update_check_unavailable">Ручная проверка обновлений недоступна</string>
     <string name="app_update_available_title">Доступно обновление: %1$s</string>
     <string name="app_update_available_message">Установлена версия: %1$s\nДоступна версия: %2$s (%3$s)</string>
     <string name="app_update_prerelease">pre-release</string>

@@ -31,10 +31,10 @@ internal object AutoProfileScoreStore {
 
     private const val VERSION_PREFIX = "v2|"
     private const val INITIAL_SCORE = 25
-    private const val VIP_ENTER_SCORE = 85
-    private const val VIP_EXIT_SCORE = 75
-    private const val VIP_MIN_SUCCESSES = 8
-    private const val VIP_MIN_STRONG_SUCCESSES = 3
+    private const val VIP_ENTER_SCORE = 50
+    private const val VIP_EXIT_SCORE = 40
+    private const val VIP_MIN_SUCCESSES = 4
+    private const val VIP_MIN_STRONG_SUCCESSES = 1
     private const val MAX_RECORDS = 50_000
     private const val PERSIST_DELAY_MS = 5_000L
 
@@ -52,10 +52,10 @@ internal object AutoProfileScoreStore {
         afterFailure: Boolean = false,
     ) {
         val delta = when (event) {
-            Event.CANDIDATE -> 1
+            Event.CANDIDATE -> 2
             Event.PRE_SWITCH -> 3
-            Event.POST_CONNECT -> 6
-            Event.PERIODIC -> if (afterFailure) 4 else 12
+            Event.POST_CONNECT -> 8
+            Event.PERIODIC -> if (afterFailure) 6 else 14
         }
         update(profile, mode, "${event.name.lowercase()}-success") { current, now ->
             val successes = (current.successes + 1).coerceAtMost(100_000)
@@ -125,7 +125,8 @@ internal object AutoProfileScoreStore {
         DiagnosticLog.event(
             "auto-vpn",
             "vip-cache-priority mode=$safeMode vip=$vipCount total=${profiles.size} " +
-                    "threshold=$VIP_ENTER_SCORE minSuccesses=$VIP_MIN_SUCCESSES",
+                    "threshold=$VIP_ENTER_SCORE minSuccesses=$VIP_MIN_SUCCESSES " +
+                    "minStrongSuccesses=$VIP_MIN_STRONG_SUCCESSES",
         )
         return profiles.withIndex()
             .sortedWith(

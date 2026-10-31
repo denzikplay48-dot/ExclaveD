@@ -96,6 +96,7 @@ class MainActivity : ThemedActivity(),
     lateinit var binding: LayoutMainBinding
     lateinit var navigation: NavigationView
     private var releaseUpdateCheckScheduled = false
+    private var releaseUpdateCheckJob: Job? = null
     private var appUpdateJob: Job? = null
     private var appUpdateDownloader: AppUpdateDownloader? = null
     private var pendingUpdateInstall: File? = null
@@ -834,24 +835,67 @@ class MainActivity : ThemedActivity(),
         lifecycleScope.launch {
             delay(1200)
             if (isFinishing || isDestroyed) return@launch
-            val update = ReleaseUpdateChecker.findAvailableUpdate() ?: return@launch
-            if (isFinishing || isDestroyed) return@launch
-            MaterialAlertDialogBuilder(this@MainActivity)
-                .setTitle(getString(R.string.app_update_available_title, update.version))
-                .setMessage(
-                    getString(
-                        R.string.app_update_available_message,
-                        BuildConfig.VERSION_NAME,
-                        update.version,
-                        getString(if (update.prerelease) R.string.app_update_prerelease else R.string.app_update_stable)
-                    )
-                )
-                .setNegativeButton(R.string.app_update_later, null)
-                .setPositiveButton(R.string.app_update_download) { _, _ ->
-                    downloadAndInstallUpdate(update)
-                }
-                .show()
+            runReleaseUpdateCheck(manual = false)
         }
+    }
+
+    fun checkReleaseUpdatesManually() {
+        runReleaseUpdateCheck(manual = true)
+    }
+
+    private fun runReleaseUpdateCheck(manual: Boolean) {
+        if (releaseUpdateCheckJob?.isActive == true) {
+            if (manual) Toast.makeText(this, R.string.app_update_check_in_progress, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val preferences = DataStore.configurationStore
+        val includeStable = preferences.getBoolean(Key.CHECK_RELEASE_UPDATES) ?: true
+        val includePrerelease = preferences.getBoolean(Key.CHECK_PRERELEASE_UPDATES) ?: false
+        if (!includeStable && !includePrerelease) {
+            if (manual) Toast.makeText(this, R.string.app_update_no_channels_enabled, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (manual) Toast.makeText(this, R.string.app_update_checking, Toast.LENGTH_SHORT).show()
+
+        releaseUpdateCheckJob = lifecycleScope.launch {
+            try {
+                val update = ReleaseUpdateChecker.findAvailableUpdate()
+                if (isFinishing || isDestroyed) return@launch
+                if (update == null) {
+                    if (manual) Toast.makeText(this@MainActivity, R.string.app_update_no_updates, Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                showAvailableUpdate(update)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLog.error("app-update", "release-check-failed", e)
+                if (manual && !isFinishing && !isDestroyed) {
+                    Toast.makeText(this@MainActivity, R.string.app_update_check_failed, Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                releaseUpdateCheckJob = null
+            }
+        }
+    }
+
+    private fun showAvailableUpdate(update: AvailableAppUpdate) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.app_update_available_title, update.version))
+            .setMessage(
+                getString(
+                    R.string.app_update_available_message,
+                    BuildConfig.VERSION_NAME,
+                    update.version,
+                    getString(if (update.prerelease) R.string.app_update_prerelease else R.string.app_update_stable),
+                ),
+            )
+            .setNegativeButton(R.string.app_update_later, null)
+            .setPositiveButton(R.string.app_update_download) { _, _ ->
+                downloadAndInstallUpdate(update)
+            }
+            .show()
     }
 
     private fun downloadAndInstallUpdate(update: AvailableAppUpdate) {

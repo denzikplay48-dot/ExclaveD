@@ -696,6 +696,9 @@
             app:key="checkPrereleaseUpdates"
             app:summary="@string/check_prerelease_updates_summary"
             app:title="@string/check_prerelease_updates" />
+        <Preference
+            app:key="checkGithubUpdatesNow"
+            app:title="@string/check_updates_now" />
         <SwitchPreference
             app:defaultValue="true"
             app:icon="@drawable/ic_social_emoji_symbols"

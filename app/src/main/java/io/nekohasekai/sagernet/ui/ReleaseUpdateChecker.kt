@@ -4,6 +4,7 @@ import android.os.Build
 import io.nekohasekai.sagernet.BuildConfig
 import io.nekohasekai.sagernet.Key
 import io.nekohasekai.sagernet.database.DataStore
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -42,7 +43,10 @@ object ReleaseUpdateChecker {
         }
 
         try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
+            val responseCode = connection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("GitHub API returned HTTP $responseCode")
+            }
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             val releases = JSONArray(body)
             val tagPattern = Regex("^${Regex.escape(channelPrefix)}(\\d+(?:\\.\\d+)*)(?:[-+].*)?$")
