@@ -394,7 +394,6 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         val autoVpnInitialSelectionTimeout = findPreference<EditTextPreference>(Key.AUTO_VPN_INITIAL_SELECTION_TIMEOUT_SECONDS)!!
         val autoVpnSwitchCooldown = findPreference<EditTextPreference>(Key.AUTO_VPN_SWITCH_COOLDOWN_SECONDS)!!
         val autoVpnQuarantine = findPreference<EditTextPreference>(Key.AUTO_VPN_QUARANTINE_MINUTES)!!
-        val autoVpnGeminiTestUrl = findPreference<EditTextPreference>(Key.AUTO_VPN_GEMINI_TEST_URL)!!
         val autoVpnResetGeminiRejected = findPreference<Preference>(Key.AUTO_VPN_RESET_GEMINI_REJECTED)!!
         val autoVpnResetExitCountryRejected = findPreference<Preference>(Key.AUTO_VPN_RESET_EXIT_COUNTRY_REJECTED)!!
         val subscriptionGlobalAutoUpdate = findPreference<SwitchPreference>(Key.SUBSCRIPTION_GLOBAL_AUTO_UPDATE)!!
@@ -464,7 +463,6 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
             autoVpnInitialSelectionTimeout,
             autoVpnSwitchCooldown,
             autoVpnQuarantine,
-            autoVpnGeminiTestUrl,
         )
         fun syncAutoVpnPreferenceState() {
             autoVpnPreferences.forEach {
@@ -513,9 +511,6 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
                 }
                 true
             }
-        }
-        autoVpnGeminiTestUrl.setOnPreferenceChangeListener { _, newValue ->
-            (newValue as String).trim().startsWith("http://") || newValue.trim().startsWith("https://")
         }
         autoVpnResetGeminiRejected.setOnPreferenceClickListener {
             val count = AutoVpnManager.resetGeminiRejectedProfiles()

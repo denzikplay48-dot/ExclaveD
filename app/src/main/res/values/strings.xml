@@ -388,7 +388,6 @@
     <string name="auto_vpn_initial_selection_timeout_seconds">Initial Auto search timeout, seconds</string>
     <string name="auto_vpn_switch_cooldown_seconds">Minimum time between switches, seconds</string>
     <string name="auto_vpn_quarantine_minutes">Bad profile quarantine, minutes</string>
-    <string name="auto_vpn_gemini_test_url">Gemini access test URL</string>
     <string name="auto_vpn_current_profile">Current: %s</string>
     <string name="auto_vpn_ready_address">Current: %1$s</string>
     <string name="auto_vpn_reserve_count">Reserve: %1$d/%2$d</string>
@@ -416,7 +415,7 @@
     <string name="auto_vpn_status_testing_more">%1$s: testing more profiles...</string>
     <string name="auto_vpn_status_restart_scan">%1$s: starting another scan round...</string>
     <string name="auto_vpn_status_rechecking_reserve">%1$s: rechecking %2$d reserve profiles...</string>
-    <string name="auto_vpn_status_verifying_connected">%1$s: checking connected profile %2$d/%3$d...</string>
+    <string name="auto_vpn_status_verifying_connected">%1$s: post-connect check, attempt %2$d of %3$d...</string>
     <string name="auto_vpn_status_checking_active">%1$s: checking active profile...</string>
     <string name="auto_vpn_status_no_direct_network_retry">%1$s: no direct internet, retrying in %2$d sec...</string>
     <string name="auto_vpn_status_active_issue">%1$s: active profile failed %2$d/%3$d</string>

@@ -145,9 +145,9 @@ object DiagnosticLog {
         critical("diagnostic", "export-requested ${stateSummary()}")
         val directory = File(app.externalCacheDir ?: app.cacheDir, "log").also { it.mkdirs() }
         val target = File(directory, "Exclave Diagnostic Journal ${fileTimestamp()}.log")
-        target.writeText(buildExportHeader(), StandardCharsets.UTF_8)
+        target.writeText(humanReadableHeader(), StandardCharsets.UTF_8)
         FileOutputStream(target, true).use { output ->
-            output.write(readRecentText(MAX_BYTES.toInt()).toByteArray(StandardCharsets.UTF_8))
+            output.write(formatJournalForHuman(readRecentText(MAX_BYTES.toInt())).toByteArray(StandardCharsets.UTF_8))
         }
         return target
     }
@@ -430,19 +430,231 @@ object DiagnosticLog {
         return runCatching { formatter.parse(prefix)?.time }.getOrNull()
     }
 
-    private fun buildExportHeader(): String {
-        return buildString {
-            appendLine("Exclave Diagnostic Journal")
-            appendLine("Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${BuildConfig.FLAVOR}")
-            appendLine("Date: ${timestamp()}")
-            appendLine("Process: $processName")
-            appendLine("SDK: ${Build.VERSION.SDK_INT}")
-            appendLine("Device: ${oneLine("${Build.MANUFACTURER} ${Build.MODEL}")}")
-            appendLine("State: ${stateSummary()}")
-            appendLine()
-            appendLine("Journal:")
-            appendLine()
+    private val journalEntryPattern = Regex("""^(.{29}) ([IWE]) pid=(\d+) process=(\S+) thread=(\S+) area=(\S+) \| (.*)$""")
+    private val journalStatePattern = Regex(""" service\{[^}]*} profileTest\{[^}]*} auto\{[^}]*} memory\{[^}]*}""")
+    private val journalAreas = mapOf(
+        "app" to "Приложение", "diagnostic" to "Диагностика", "auto-vpn" to "Авто-VPN",
+        "profile-test" to "Проверка профилей", "service" to "VPN-служба",
+        "configuration-ui" to "Экран конфигураций", "ui" to "Интерфейс",
+        "watchdog" to "Контроль зависания", "subscription" to "Подписки",
+        "group-sync" to "Синхронизация групп", "update" to "Обновление", "crash" to "Сбой приложения",
+    )
+    private val journalEvents = mapOf(
+        "process-start" to "Запуск приложения",
+        "auto-search-session-start" to "Запущен поиск автопрофиля",
+        "start-from-vpn-button" to "Запуск поиска кнопкой VPN",
+        "direct-test-handoff-start" to "Подготовка сети к проверке профилей",
+        "direct-search-service-start" to "Запущена служба поиска профилей",
+        "detached-search-start" to "Начат поиск профилей",
+        "detached-search-finish" to "Поиск профилей завершён",
+        "candidate-test-start" to "Проверяется профиль",
+        "candidate-test-success" to "Профиль прошёл проверку",
+        "candidate-test-failed" to "Профиль не прошёл проверку",
+        "candidate-test-cancelled" to "Проверка профиля отменена",
+        "candidate-batch-cancelled" to "Пакет проверок отменён",
+        "progress-clear" to "Счётчик проверки очищен",
+        "progress-reset" to "Счётчик проверки сброшен",
+        "progress-count" to "Обновлён счётчик проверки",
+        "progress-skip" to "Профили пропущены фильтром",
+        "progress-finish" to "Подсчёт проверки завершён",
+        "post-connect-verification-scheduled" to "Запланирована проверка после подключения",
+        "post-connect-attempt-start" to "Проверка после подключения началась",
+        "post-connect-attempt-result" to "Результат проверки после подключения",
+        "post-connect-verification-finished" to "Проверка после подключения завершена",
+        "post-connect-country-check-finished" to "Проверена страна выхода",
+        "active-monitor-start" to "Запущен контроль активного профиля",
+        "active-monitor-tick" to "Плановая проверка активного профиля",
+        "active-monitor-stop" to "Контроль активного профиля остановлен",
+        "active-traffic-probe" to "Проверен трафик через VPN",
+        "traffic-signal" to "Обнаружен подозрительный трафик",
+        "exit-country-check" to "Проверена страна IP выхода",
+        "network-status" to "Проверена доступность сети",
+        "vpn-started-callback" to "VPN подключён",
+        "vpn-stopped-callback" to "VPN отключён",
+        "switchTo" to "Переключение профиля",
+        "restart-scan-cycle" to "Начат новый круг поиска",
+        "stop-scan" to "Поиск остановлен",
+        "initial-scan-finish" to "Первичный поиск завершён",
+        "main-thread-not-responding" to "Главный поток приложения не отвечает",
+        "export-requested" to "Подготовлен экспорт журнала",
+    )
+    private val journalFields = mapOf(
+        "id" to "ID", "profile" to "профиль", "group" to "группа", "type" to "тип",
+        "name" to "имя", "kind" to "протокол", "address" to "сервер", "status" to "статус",
+        "ping" to "пинг", "error" to "ошибка", "mode" to "режим", "attempt" to "попытка",
+        "elapsedMs" to "время, мс", "delaysMs" to "интервалы, мс", "source" to "источник",
+        "reason" to "причина", "total" to "всего", "finished" to "обработано", "working" to "рабочих",
+        "pending" to "ожидает", "started" to "подключено", "enabled" to "включено", "running" to "выполняется",
+        "progress" to "прогресс", "countryName" to "страна выхода", "country" to "код страны",
+        "accepted" to "принят", "reachable" to "доступен", "bytesPerSecond" to "скорость, байт/с",
+        "complete" to "загрузка завершена", "workingResult" to "профиль рабочий", "trigger" to "причина запуска",
+        "urlTester" to "URL-проверка", "stillCurrent" to "тот же профиль", "autoRestarting" to "идёт автопереключение",
+        "immediateVerifyActive" to "идёт проверка после подключения", "monitorActive" to "контроль активен",
+        "main" to "главный процесс", "sdk" to "версия Android", "device" to "устройство",
+        "pid" to "ID процесса", "process" to "процесс", "flavor" to "сборка", "version" to "версия",
+        "selected" to "выбран профиль", "startedProfile" to "подключённый профиль", "mainStack" to "стек главного потока",
+    )
+
+    fun humanReadableHeader(): String = buildString {
+        appendLine("Журнал диагностики ExclaveD")
+        appendLine("Версия: " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + "), " + flavorName())
+        appendLine("Дата формирования: " + timestamp())
+        appendLine("Устройство: " + oneLine(Build.MANUFACTURER + " " + Build.MODEL))
+        appendLine("Android API: " + Build.VERSION.SDK_INT)
+        appendLine("Текущее состояние: " + formatStateSummary(stateSummary()))
+        appendLine()
+        appendLine("События:")
+        appendLine()
+    }
+
+    fun formatJournalForHuman(text: String): String {
+        if (text.isEmpty()) return ""
+        val lines = text.lineSequence().map { line ->
+            val match = journalEntryPattern.matchEntire(line)
+            when {
+                match != null -> formatJournalEntry(match)
+                line.startsWith("--- diagnostic journal trimmed") -> "Часть старых записей удалена для ограничения размера журнала."
+                line.startsWith("--- diagnostic journal:") -> "Записи старше часа удалены."
+                line.startsWith("--- beginning trimmed") -> "Показана последняя часть журнала."
+                line.startsWith("Persistent diagnostic journal is empty") -> "Журнал пока пуст."
+                line.startsWith("Persistent diagnostic journal read failed") -> "Не удалось прочитать журнал: " + translateErrorText(line)
+                line.startsWith("    at ") || line.startsWith("\tat ") -> "    Вызов: " + line.trim()
+                line.startsWith("Caused by:") -> "Причина: " + translateErrorText(line.removePrefix("Caused by:"))
+                line.isBlank() -> ""
+                else -> "    Подробности: " + translateErrorText(line)
+            }
+        }.joinToString("\n")
+        return if (text.endsWith('\n')) lines + "\n" else lines
+    }
+
+    private fun formatJournalEntry(match: MatchResult): String {
+        val messageRaw = match.groupValues[7]
+        val stateMatch = journalStatePattern.find(messageRaw)
+        val message = if (stateMatch == null) messageRaw else messageRaw.replace(stateMatch.value, "").trim()
+        if (match.groupValues[6] == "app" && message.startsWith("initial-state ")) return ""
+        val event = message.substringBefore(' ')
+        val eventCode = event.takeIf { !it.contains('=') && (it.contains('-') || journalEvents.containsKey(it)) }
+        val heading = eventCode?.let { journalEvents[it] ?: humanizeJournalEvent(it) } ?: "Событие"
+        val detail = if (eventCode == null) message else message.removePrefix(event).trim()
+        val severity = when (match.groupValues[2]) {
+            "E" -> "ОШИБКА"
+            "W" -> "ВНИМАНИЕ"
+            else -> "ИНФО"
         }
+        return buildString {
+            append(match.groupValues[1])
+            append(" | ")
+            append(severity)
+            append(" | ")
+            append(journalAreas[match.groupValues[6]] ?: humanizeJournalEvent(match.groupValues[6]))
+            append(" | ")
+            append(heading)
+            if (detail.isNotBlank()) append(": " + translateDiagnosticFields(detail))
+            if (match.groupValues[2] != "I" && stateMatch != null) {
+                append("\n    Состояние: ")
+                append(formatStateSummary(stateMatch.value))
+                append("\n    Процесс: ")
+                append(match.groupValues[4])
+                append("; поток: ")
+                append(match.groupValues[5])
+            }
+        }
+    }
+
+    private fun formatStateSummary(raw: String): String {
+        fun fields(section: String): Map<String, String> = Regex("([A-Za-z][A-Za-z0-9]*)=([^,}]*)").findAll(section)
+            .associate { it.groupValues[1] to it.groupValues[2].trim() }
+        val sections = mutableListOf<String>()
+        Regex("service\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+            val data = fields(it)
+            sections += "VPN " + if (data["started"] == "true") "подключён" else "отключён"
+            sections += "профиль " + (data["startedProfile"] ?: "-")
+        }
+        Regex("profileTest\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+            val data = fields(it)
+            sections += "проверка профилей " + (data["finished"] ?: "0") + "/" + (data["total"] ?: "0")
+            sections += "рабочих " + (data["working"] ?: "0") + ", ожидают " + (data["pending"] ?: "0")
+        }
+        Regex("auto\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+            val data = fields(it)
+            val mode = when (data["mode"]) { "1" -> "без RU"; "2" -> "Gemini"; else -> "обычный" }
+            sections += "авторежим " + mode + " " + if (data["enabled"] == "true") "включён" else "выключен"
+            sections += "кандидатов " + (data["working"] ?: "0")
+            data["status"]?.takeIf { value -> value.isNotBlank() }?.let { status -> sections += "статус: " + status }
+        }
+        Regex("memory\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+            val data = fields(it)
+            val used = data["used"]?.toLongOrNull() ?: 0L
+            val max = data["max"]?.toLongOrNull() ?: 0L
+            if (max > 0L) sections += "память " + formatBytes(used) + " из " + formatBytes(max)
+        }
+        return sections.joinToString("; ").ifBlank { "состояние не записано" }
+    }
+
+    private fun formatBytes(value: Long): String = when {
+        value >= 1024L * 1024L -> (value / (1024L * 1024L)).toString() + " МБ"
+        value >= 1024L -> (value / 1024L).toString() + " КБ"
+        else -> value.toString() + " байт"
+    }
+
+    private fun translateDiagnosticFields(raw: String): String {
+        val translated = Regex("([A-Za-z][A-Za-z0-9]*)=([^\\s,]+)").replace(raw) { match ->
+            val key = match.groupValues[1]
+            val rawValue = match.groupValues[2]
+            val value = when {
+                rawValue == "true" -> "да"
+                rawValue == "false" -> "нет"
+                key == "mode" -> when (rawValue) { "1" -> "без RU"; "2" -> "Gemini"; else -> "обычный" }
+                key in setOf("source", "reason", "outcome", "trigger") -> humanizeJournalEvent(rawValue)
+                else -> rawValue
+            }
+            (journalFields[key] ?: key) + ": " + value
+        }
+        return translateErrorText(translated)
+    }
+
+    private fun translateErrorText(raw: String): String {
+        val phrases = listOf(
+            "context deadline exceeded" to "истекло время ожидания",
+            "TLS handshake timeout" to "истекло время TLS-согласования",
+            "connection refused" to "сервер отказал в соединении",
+            "no route to host" to "нет маршрута до сервера",
+            "network is unreachable" to "сеть недоступна",
+            "connection reset by peer" to "сервер сбросил соединение",
+            "read/write on closed pipe" to "канал соединения закрыт",
+            "unexpected EOF" to "соединение неожиданно завершилось",
+            "socket timeout" to "истекло время ожидания ответа",
+        )
+        return phrases.fold(raw) { current, phrase -> current.replace(phrase.first, phrase.second, ignoreCase = true) }
+    }
+
+    private fun humanizeJournalEvent(value: String): String {
+        journalEvents[value]?.let { return it }
+        val words = mapOf(
+            "start" to "запуск", "started" to "запущено", "stop" to "остановка", "stopped" to "остановлено",
+            "finish" to "завершение", "finished" to "завершено", "check" to "проверка", "checking" to "проверяется",
+            "test" to "проверка", "tested" to "проверено", "candidate" to "кандидат", "profile" to "профиль",
+            "connected" to "подключено", "connect" to "подключение", "disconnect" to "отключение",
+            "active" to "активный", "monitor" to "контроль", "tick" to "проход", "scan" to "поиск",
+            "search" to "поиск", "progress" to "счётчик", "count" to "число", "reset" to "сброс",
+            "clear" to "очистка", "country" to "страна", "exit" to "выход", "network" to "сеть",
+            "traffic" to "трафик", "switch" to "переключение", "selected" to "выбран", "status" to "статус",
+            "service" to "служба", "resume" to "продолжение", "cancel" to "отмена", "cancelled" to "отменено",
+            "timeout" to "тайм-аут", "attempt" to "попытка", "result" to "результат", "error" to "ошибка",
+            "warn" to "предупреждение", "retry" to "повтор", "direct" to "напрямую", "deferred" to "отложено",
+            "failed" to "неудача", "success" to "успех", "replaced" to "заменено", "scheduled" to "запланировано",
+            "available" to "доступно", "unavailable" to "недоступно", "ready" to "готово", "state" to "состояние",
+            "initial" to "первичный", "manual" to "ручной", "auto" to "авто", "round" to "круг",
+            "next" to "следующий", "unknown" to "неизвестно", "missing" to "отсутствует", "requested" to "запрошено",
+            "watchdog" to "контроль", "export" to "экспорт", "read" to "чтение", "write" to "запись",
+        )
+        return value.split('-', '_').joinToString(" ") { words[it] ?: it }
+    }
+
+    private fun flavorName(): String = when (BuildConfig.FLAVOR) {
+        "clone" -> "тестовая версия"
+        "oss" -> "основная версия"
+        else -> BuildConfig.FLAVOR
     }
 
     private fun timestamp(): String {

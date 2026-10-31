@@ -1521,12 +1521,12 @@ class ConfigurationFragment @JvmOverloads constructor(
         } else {
             DataStore.manualGeminiTestFilterEnabled
         }
-        val testUrl = if (resume) {
+        val testUrl = if (geminiFilter) {
+            DataStore.connectionTestURL
+        } else if (resume) {
             DataStore.profileTestUrl.ifBlank {
-                if (geminiFilter) DataStore.autoVpnGeminiTestUrl else DataStore.connectionTestURL
+                DataStore.connectionTestURL
             }
-        } else if (geminiFilter) {
-            DataStore.autoVpnGeminiTestUrl.trim().ifBlank { "https://gemini.google.com/" }
         } else {
             DataStore.connectionTestURL
         }
