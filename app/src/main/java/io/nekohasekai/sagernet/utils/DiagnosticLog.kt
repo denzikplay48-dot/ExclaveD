@@ -431,7 +431,7 @@ object DiagnosticLog {
     }
 
     private val journalEntryPattern = Regex("""^(.{29}) ([IWE]) pid=(\d+) process=(\S+) thread=(\S+) area=(\S+) \| (.*)$""")
-    private val journalStatePattern = Regex(""" service\{[^}]*} profileTest\{[^}]*} auto\{[^}]*} memory\{[^}]*}""")
+    private val journalStatePattern = Regex(""" service\{[^}]*\} profileTest\{[^}]*\} auto\{[^}]*\} memory\{[^}]*\}""")
     private val journalAreas = mapOf(
         "app" to "Приложение", "diagnostic" to "Диагностика", "auto-vpn" to "Авто-VPN",
         "profile-test" to "Проверка профилей", "service" to "VPN-служба",
@@ -565,24 +565,24 @@ object DiagnosticLog {
         fun fields(section: String): Map<String, String> = Regex("([A-Za-z][A-Za-z0-9]*)=([^,}]*)").findAll(section)
             .associate { it.groupValues[1] to it.groupValues[2].trim() }
         val sections = mutableListOf<String>()
-        Regex("service\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+        Regex("service\\{([^}]*)\\}").find(raw)?.groupValues?.get(1)?.let {
             val data = fields(it)
             sections += "VPN " + if (data["started"] == "true") "подключён" else "отключён"
             sections += "профиль " + (data["startedProfile"] ?: "-")
         }
-        Regex("profileTest\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+        Regex("profileTest\\{([^}]*)\\}").find(raw)?.groupValues?.get(1)?.let {
             val data = fields(it)
             sections += "проверка профилей " + (data["finished"] ?: "0") + "/" + (data["total"] ?: "0")
             sections += "рабочих " + (data["working"] ?: "0") + ", ожидают " + (data["pending"] ?: "0")
         }
-        Regex("auto\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+        Regex("auto\\{([^}]*)\\}").find(raw)?.groupValues?.get(1)?.let {
             val data = fields(it)
             val mode = when (data["mode"]) { "1" -> "без RU"; "2" -> "Gemini"; else -> "обычный" }
             sections += "авторежим " + mode + " " + if (data["enabled"] == "true") "включён" else "выключен"
             sections += "кандидатов " + (data["working"] ?: "0")
             data["status"]?.takeIf { value -> value.isNotBlank() }?.let { status -> sections += "статус: " + status }
         }
-        Regex("memory\\{([^}]*)}").find(raw)?.groupValues?.get(1)?.let {
+        Regex("memory\\{([^}]*)\\}").find(raw)?.groupValues?.get(1)?.let {
             val data = fields(it)
             val used = data["used"]?.toLongOrNull() ?: 0L
             val max = data["max"]?.toLongOrNull() ?: 0L
