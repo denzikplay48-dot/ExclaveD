@@ -2151,7 +2151,7 @@ object AutoVpnManager {
         )
     }
 
-    private fun recordActiveTrafficSuccess(
+    private suspend fun recordActiveTrafficSuccess(
         profileId: Long,
         mode: Int,
         result: ActiveVpnTrafficProbe.Result,
@@ -2177,7 +2177,7 @@ object AutoVpnManager {
         notifyAutoStateChanged()
     }
 
-    private fun recordActiveTrafficFailure(
+    private suspend fun recordActiveTrafficFailure(
         profileId: Long,
         mode: Int,
         scoreEvent: AutoProfileScoreStore.Event,
