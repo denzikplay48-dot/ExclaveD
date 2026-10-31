@@ -1578,6 +1578,26 @@ object AutoVpnManager {
         }
     }
 
+    private fun deferForMissingDirectNetwork(profileId: Long, mode: Int, trafficTriggered: Boolean) {
+        if (!isSameStartedAutoProfile(profileId, mode)) return
+        failures = 0
+        setAutoStatus(mode, R.string.auto_vpn_status_underlying_network_unavailable)
+        DiagnosticLog.event(
+            "auto-vpn",
+            "active-check-deferred-no-underlying-network profile=$profileId mode=$mode " +
+                    "trafficTriggered=$trafficTriggered",
+        )
+    }
+
+    private suspend fun confirmActiveProfileFailure(profileId: Long, mode: Int, reason: String) {
+        if (!isSameStartedAutoProfile(profileId, mode)) return
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "active-failure-confirmed reason=$reason profile=$profileId mode=$mode",
+        )
+        switchAfterPostConnectFailures(profileId, mode)
+    }
+
     private fun startTrafficMonitor() {
         if (!DataStore.autoVpnTrafficMonitorEnabled) {
             stopTrafficMonitoring()
@@ -1914,7 +1934,7 @@ object AutoVpnManager {
         )
     }
 
-    private fun recordActiveTrafficSuccess(
+    private suspend fun recordActiveTrafficSuccess(
         profileId: Long,
         mode: Int,
         result: ActiveVpnTrafficProbe.Result,
@@ -1940,7 +1960,7 @@ object AutoVpnManager {
         notifyAutoStateChanged()
     }
 
-    private fun recordActiveTrafficFailure(
+    private suspend fun recordActiveTrafficFailure(
         profileId: Long,
         mode: Int,
         scoreEvent: AutoProfileScoreStore.Event,
