@@ -132,7 +132,6 @@ class ConfigurationFragment @JvmOverloads constructor(
     private var profileTestResumeCheckJob: Job? = null
     private var profileTestSortJob: Job? = null
     private var profileTestStatusPollJob: Job? = null
-    private var individualPingRequestPending = false
     private var observedAutoTestResultsResetGeneration = AutoVpnManager.testResultsResetGeneration
     private var autoStatusReceiver: BroadcastReceiver? = null
 
@@ -1669,6 +1668,7 @@ class ConfigurationFragment @JvmOverloads constructor(
         var selectedGroupIndex = 0
         var groupList: ArrayList<ProxyGroup> = ArrayList()
         var groupFragments: HashMap<Long, GroupFragment> = HashMap()
+        private var individualPingRequestPending = false
 
         fun reload(now: Boolean = false) {
 
