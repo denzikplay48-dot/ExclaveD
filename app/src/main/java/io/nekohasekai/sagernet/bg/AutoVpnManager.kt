@@ -63,6 +63,7 @@ import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 
 object AutoVpnManager {
 
@@ -282,6 +283,7 @@ object AutoVpnManager {
 
     private var monitorJob: Job? = null
     private var immediateVerifyJob: Job? = null
+    private val immediateVerifyGeneration = AtomicLong(0L)
     private var autoScanJob: Job? = null
     private var trafficMonitorJob: Job? = null
     private var trafficDiagnosticJob: Job? = null
@@ -1006,6 +1008,7 @@ object AutoVpnManager {
     fun disable() {
         DataStore.autoVpnEnabled = false
         DataStore.autoVpnServiceStartRequested = false
+        immediateVerifyGeneration.incrementAndGet()
         failures = 0
         monitorJob?.cancel()
         monitorJob = null
@@ -1073,6 +1076,7 @@ object AutoVpnManager {
                     "monitorActive=${monitorJob?.isActive == true}",
         )
         failures = 0
+        immediateVerifyGeneration.incrementAndGet()
         monitorJob?.cancel()
         monitorJob = null
         immediateVerifyJob?.cancel()
@@ -1770,6 +1774,7 @@ object AutoVpnManager {
     }
 
     private fun verifyCurrentSoon(urlTester: (() -> Int)?) {
+        val verificationGeneration = immediateVerifyGeneration.incrementAndGet()
         val previousVerifyActive = immediateVerifyJob?.isActive == true
         if (previousVerifyActive) {
             DiagnosticLog.event(
@@ -1788,6 +1793,7 @@ object AutoVpnManager {
         )
         immediateVerifyJob = runOnDefaultDispatcher {
             var outcome = "completed"
+            var pendingVerificationStatus: String? = null
             val verifyStartedAt = System.currentTimeMillis()
             try {
                 if (profileId <= 0L || urlTester == null) {
@@ -1802,6 +1808,12 @@ object AutoVpnManager {
                         DiagnosticLog.event("auto-vpn", "post-connect-verification-skipped outcome=$outcome profile=$profileId")
                         return@runOnDefaultDispatcher
                     }
+                    pendingVerificationStatus = app.getString(
+                        R.string.auto_vpn_status_verifying_connected,
+                        modeName(mode),
+                        index + 1,
+                        POST_CONNECT_VERIFY_DELAYS_MS.size,
+                    )
                     setAutoNotificationStatus(mode, R.string.auto_vpn_status_verifying_connected, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
                     DiagnosticLog.critical(
                         "auto-vpn",
@@ -1910,6 +1922,18 @@ object AutoVpnManager {
                 DiagnosticLog.error("auto-vpn", "post-connect-verification-failed profile=$profileId mode=$mode", e)
                 throw e
             } finally {
+                val pendingStatus = pendingVerificationStatus
+                if (verificationGeneration == immediateVerifyGeneration.get() &&
+                    pendingStatus != null &&
+                    isSameStartedAutoProfile(profileId, mode) &&
+                    DataStore.autoVpnStatusText == pendingStatus
+                ) {
+                    DiagnosticLog.warn(
+                        "auto-vpn",
+                        "post-connect-status-stale-cleared profile=$profileId mode=$mode",
+                    )
+                    setAutoReadyStatus(mode)
+                }
                 DiagnosticLog.critical(
                     "auto-vpn",
                     "post-connect-verification-finished outcome=$outcome elapsedMs=${System.currentTimeMillis() - verifyStartedAt} " +
@@ -2588,7 +2612,7 @@ object AutoVpnManager {
         scoreRetry: Boolean = false,
     ): CandidateOutcome {
         val timeout = DataStore.connectionTestTimeoutSeconds.coerceAtLeast(1) * 1000
-        val link = testUrlForMode(mode)
+        val link = testUrlForMode()
         val startedAt = System.currentTimeMillis()
         profile.status = 0
         profile.error = null
@@ -2722,12 +2746,8 @@ object AutoVpnManager {
         )
     }
 
-    private fun testUrlForMode(mode: Int): String {
-        return if (mode == MODE_GEMINI) {
-            DataStore.autoVpnGeminiTestUrl.trim().ifBlank { "https://gemini.google.com/" }
-        } else {
-            DataStore.connectionTestURL
-        }
+    private fun testUrlForMode(): String {
+        return DataStore.connectionTestURL
     }
 
     private fun profileAllowed(profile: ProxyEntity, mode: Int): Boolean {

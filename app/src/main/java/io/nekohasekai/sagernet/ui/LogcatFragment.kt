@@ -21,6 +21,7 @@ package io.nekohasekai.sagernet.ui
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.text.SpannableStringBuilder
 import android.view.*
 import androidx.appcompat.widget.Toolbar
 import androidx.core.content.FileProvider
@@ -123,6 +124,41 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         process?.destroy()
     }
 
+    private fun appendLogUpdate(chunk: CharSequence) {
+        if (chunk.isEmpty()) return
+        val scrollView = binding.logsScrollView
+        val textView = binding.logsTextView
+        val oldScrollY = scrollView.scrollY
+        val wasAtBottom = scrollView.childCount == 0 ||
+                scrollView.getChildAt(0).bottom <= oldScrollY + scrollView.height + dp2px(24)
+        val combined = SpannableStringBuilder(textView.text).append(chunk)
+        val excessLines = combined.count { it == '\n' } - MAX_VISIBLE_LOG_LINES
+        var trimOffset = 0
+        if (excessLines > 0) {
+            var removedLines = 0
+            for (index in 0 until combined.length) {
+                if (combined[index] == '\n') {
+                    removedLines++
+                    if (removedLines == excessLines) {
+                        trimOffset = index + 1
+                        break
+                    }
+                }
+            }
+        }
+        if (trimOffset > 0) combined.delete(0, trimOffset)
+        textView.text = combined
+        scrollView.post {
+            if (!viewAvailable) return@post
+            if (wasAtBottom) {
+                scrollView.fullScroll(View.FOCUS_DOWN)
+            } else {
+                val maxScroll = (scrollView.getChildAt(0).height - scrollView.height).coerceAtLeast(0)
+                scrollView.scrollTo(0, oldScrollY.coerceAtMost(maxScroll))
+            }
+        }
+    }
+
     private fun startLogcatStream() {
         stopLogStream()
         diagnosticJournalSelected = false
@@ -204,13 +240,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
 
                 onMainDispatcher {
                     if (!viewAvailable || diagnosticJournalSelected) return@onMainDispatcher
-                    if (binding.logsTextView.lineCount + bufferedLogLines.size > 2048) {
-                        binding.logsTextView.text = ""
-                        if (bufferedLogLines.size > 2048) {
-                            bufferedLogLines.drop(bufferedLogLines.size - 2048)
-                        }
-                    }
-                    binding.logsTextView.append(
+                    appendLogUpdate(
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             ColorUtils.ansiEscapeToSpannable(binding.root.context,
                                 bufferedLogLines.joinToString(separator = "\n", postfix = "\n")
@@ -220,9 +250,6 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                         }
                     )
                     bufferedLogLines.clear()
-                    binding.logsScrollView.post {
-                        binding.logsScrollView.fullScroll(View.FOCUS_DOWN)
-                    }
                 }
             }
         } finally {
@@ -257,9 +284,13 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                     firstRead = false
                     onMainDispatcher {
                         if (viewAvailable && diagnosticJournalSelected) {
-                            binding.logsTextView.text = snapshot.ifBlank {
+                            val readableSnapshot = if (snapshot.isBlank()) {
                                 getString(R.string.diagnostic_journal_empty)
+                            } else {
+                                DiagnosticLog.formatJournalForHuman(snapshot)
                             }
+                            binding.logsTextView.text = DiagnosticLog.humanReadableHeader() +
+                                    readableSnapshot
                             binding.logsScrollView.post { binding.logsScrollView.fullScroll(View.FOCUS_DOWN) }
                         }
                     }
@@ -277,11 +308,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                     val chunk = String(bytes, StandardCharsets.UTF_8)
                     onMainDispatcher {
                         if (!viewAvailable || !diagnosticJournalSelected) return@onMainDispatcher
-                        val combined = binding.logsTextView.text.toString() + chunk
-                        binding.logsTextView.text = combined.lines()
-                            .takeLast(MAX_VISIBLE_LOG_LINES)
-                            .joinToString(separator = "\n", postfix = "\n")
-                        binding.logsScrollView.post { binding.logsScrollView.fullScroll(View.FOCUS_DOWN) }
+                        appendLogUpdate(DiagnosticLog.formatJournalForHuman(chunk))
                     }
                 }
             }

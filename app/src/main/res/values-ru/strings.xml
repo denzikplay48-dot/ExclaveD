@@ -662,7 +662,6 @@
     <string name="auto_vpn_initial_selection_timeout_seconds">Таймаут первичного поиска Auto (секунды)</string>
     <string name="auto_vpn_switch_cooldown_seconds">&#1052;&#1080;&#1085;&#1080;&#1084;&#1091;&#1084; &#1084;&#1077;&#1078;&#1076;&#1091; &#1087;&#1077;&#1088;&#1077;&#1082;&#1083;&#1102;&#1095;&#1077;&#1085;&#1080;&#1103;&#1084;&#1080; (&#1089;&#1077;&#1082;&#1091;&#1085;&#1076;&#1099;)</string>
     <string name="auto_vpn_quarantine_minutes">Карантин плохого профиля (минуты)</string>
-    <string name="auto_vpn_gemini_test_url">URL &#1087;&#1088;&#1086;&#1074;&#1077;&#1088;&#1082;&#1080; Gemini</string>
     <string name="auto_vpn_current_profile">&#1057;&#1077;&#1081;&#1095;&#1072;&#1089;: %s</string>
     <string name="auto_vpn_ready_address">Сейчас: %1$s</string>
     <string name="auto_vpn_reserve_count">Запас: %1$d/%2$d</string>
@@ -690,7 +689,7 @@
     <string name="auto_vpn_status_testing_more">%1$s: проверяю следующие профили...</string>
     <string name="auto_vpn_status_restart_scan">%1$s: запускаю следующий круг проверки...</string>
     <string name="auto_vpn_status_rechecking_reserve">%1$s: перепроверяю запасные профили: %2$d</string>
-    <string name="auto_vpn_status_verifying_connected">%1$s: проверяю подключенный профиль %2$d/%3$d...</string>
+    <string name="auto_vpn_status_verifying_connected">%1$s: проверка после подключения, попытка %2$d из %3$d...</string>
     <string name="auto_vpn_status_checking_active">%1$s: проверяю активный профиль...</string>
     <string name="auto_vpn_status_underlying_network_unavailable">%1$s: обычная сеть недоступна, оставляю текущий профиль</string>
     <string name="auto_vpn_status_active_issue">%1$s: активный профиль не прошёл %2$d/%3$d</string>

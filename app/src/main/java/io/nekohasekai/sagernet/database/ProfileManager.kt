@@ -300,7 +300,6 @@ object ProfileManager {
                 outbound = -2L,
             ),
             RuleEntity(
-                enabled = true,
                 name = "Аналитика и телеметрия",
                 domains = "geosite:category-ads-all",
                 outbound = -2L,
