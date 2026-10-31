@@ -4,6 +4,13 @@
     <string name="check_release_updates">Check stable release updates</string>
     <string name="check_prerelease_updates">Check pre-release updates</string>
     <string name="check_prerelease_updates_summary">Developer builds for this app only</string>
+    <string name="check_updates_now">Check for updates now</string>
+    <string name="app_update_checking">Checking GitHub for updates…</string>
+    <string name="app_update_check_in_progress">An update check is already running</string>
+    <string name="app_update_no_channels_enabled">Enable stable or pre-release updates to check</string>
+    <string name="app_update_no_updates">No new updates are available</string>
+    <string name="app_update_check_failed">Could not check GitHub for updates</string>
+    <string name="app_update_check_unavailable">Manual update check is unavailable</string>
     <string name="app_update_available_title">Update available: %1$s</string>
     <string name="app_update_available_message">Installed: %1$s\nAvailable: %2$s (%3$s)</string>
     <string name="app_update_prerelease">pre-release</string>

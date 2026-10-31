@@ -839,6 +839,11 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         findPreference<EditTextPreference>(Key.EXPERIMENTAL_FLAGS)!!.isVisible = DataStore.enableDebug
 
         // misc settings
+        findPreference<Preference>("checkGithubUpdatesNow")!!.setOnPreferenceClickListener {
+            (activity as? MainActivity)?.checkReleaseUpdatesManually()
+                ?: Toast.makeText(requireContext(), R.string.app_update_check_unavailable, Toast.LENGTH_SHORT).show()
+            true
+        }
         findPreference<SwitchPreference>(Key.SHOW_GROUP_NAME)!!.onPreferenceChangeListener = reloadListener
         findPreference<SwitchPreference>(Key.ACQUIRE_WAKE_LOCK)!!.onPreferenceChangeListener = reloadListener
         findPreference<ListPreference>(Key.FAB_STYLE)!!.setOnPreferenceChangeListener { _, _ ->

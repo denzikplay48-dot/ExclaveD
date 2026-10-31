@@ -1668,8 +1668,6 @@ class ConfigurationFragment @JvmOverloads constructor(
         var selectedGroupIndex = 0
         var groupList: ArrayList<ProxyGroup> = ArrayList()
         var groupFragments: HashMap<Long, GroupFragment> = HashMap()
-        private var individualPingRequestPending = false
-
         fun reload(now: Boolean = false) {
 
             if (!select) {
@@ -2115,6 +2113,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             private val configurationIndex = HashMap<Long, Int>()
             val pendingDeletedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
             private val pendingProfileRowUpdates = java.util.concurrent.ConcurrentHashMap<Long, ProxyEntity>()
+            private var individualPingRequestPending = false
             private var filterText = ""
             private var nextOffset = 0
             private var hasMorePages = false
