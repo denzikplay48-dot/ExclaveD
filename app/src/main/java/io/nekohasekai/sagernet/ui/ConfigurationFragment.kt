@@ -133,6 +133,7 @@ class ConfigurationFragment @JvmOverloads constructor(
     private var profileTestResumeCheckJob: Job? = null
     private var profileTestSortJob: Job? = null
     private var profileTestStatusPollJob: Job? = null
+    private var individualPingRequestPending = false
     private var observedAutoTestResultsResetGeneration = AutoVpnManager.testResultsResetGeneration
     private var autoStatusReceiver: BroadcastReceiver? = null
 
@@ -2716,6 +2717,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             val trafficText: TextView = view.findViewById(R.id.traffic_text)
             val selectedView: LinearLayout = view.findViewById(R.id.selected_view)
             val editButton: ImageView = view.findViewById(R.id.edit)
+            val pingButton: ImageView = view.findViewById(R.id.checkPing)
             val shareLayout: LinearLayout = view.findViewById(R.id.share)
             val shareLayer: LinearLayout = view.findViewById(R.id.share_layer)
             val shareButton: ImageView = view.findViewById(R.id.shareIcon)
@@ -2842,6 +2844,50 @@ class ConfigurationFragment @JvmOverloads constructor(
                     }
                 }
 
+                pingButton.setOnClickListener {
+                    val requestedProfileId = proxyEntity.id
+                    if (individualPingRequestPending || ProfileTestRunner.isRunning() || AutoVpnManager.isAutoRunning()) {
+                        snackbar(R.string.profile_ping_test_busy).show()
+                        return@setOnClickListener
+                    }
+
+                    individualPingRequestPending = true
+                    runOnDefaultDispatcher {
+                        var startError: Exception? = null
+                        try {
+                            ProfileTestRunner.start(
+                                profileIdsToTest = listOf(requestedProfileId),
+                                resetGroupIds = emptyList(),
+                                resume = false,
+                                resumeSnapshot = null,
+                                testUrl = DataStore.connectionTestURL,
+                            )
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            startError = e
+                            DiagnosticLog.error(
+                                "configuration-ui",
+                                "individual-ping-start-failed profile=$requestedProfileId",
+                                e,
+                            )
+                        } finally {
+                            onMainDispatcher {
+                                individualPingRequestPending = false
+                            }
+                        }
+
+                        onMainDispatcher {
+                            if (!isAdded || view == null) return@onMainDispatcher
+                            if (startError == null) {
+                                snackbar(R.string.profile_ping_test_started).show()
+                            } else {
+                                snackbar(getString(R.string.profile_ping_test_failed, startError?.readableMessage.orEmpty())).show()
+                            }
+                        }
+                    }
+                }
+
                 deleteButton.setOnClickListener {
                     adapter.let {
                         val index = it.configurationIdList.indexOf(proxyEntity.id)
@@ -2855,6 +2901,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                 }
 
                 editButton.isGone = parent.select
+                pingButton.isGone = parent.select
                 deleteButton.isGone = parent.select
                 shareButton.isGone = parent.select
 
@@ -3042,6 +3089,7 @@ class ConfigurationFragment @JvmOverloads constructor(
 
                 profileStatus.setOnClickListener(null)
                 editButton.isGone = true
+                pingButton.isGone = true
                 deleteButton.isGone = true
                 shareButton.isGone = true
                 shareLayout.setOnClickListener(null)
