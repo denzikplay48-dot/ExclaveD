@@ -185,6 +185,10 @@
     <string name="connection_test_domain_not_found">Домен не найден</string>
     <string name="connection_test_clear_results">Сбросить результаты теста</string>
     <string name="connection_test">Тест подключения</string>
+    <string name="check_ping">Проверить пинг</string>
+    <string name="profile_ping_test_busy">Дождитесь окончания текущей проверки профилей или авто-поиска</string>
+    <string name="profile_ping_test_started">Проверка пинга запущена</string>
+    <string name="profile_ping_test_failed">Не удалось запустить проверку пинга: %s</string>
     <string name="clear_traffic_statistics">Сбросить статистику трафика</string>
     <string name="always_show_address_sum">Отображать адреса серверов в списке профилей</string>
     <string name="always_show_address">Всегда показывать адрес</string>

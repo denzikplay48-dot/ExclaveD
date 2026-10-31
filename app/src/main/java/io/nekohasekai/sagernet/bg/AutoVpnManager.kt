@@ -1170,6 +1170,12 @@ object AutoVpnManager {
             FloatingSwitchButton.hide()
             return
         }
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "vpn-started-callback profile=${DataStore.startedProfile} mode=${sanitizeMode(DataStore.autoVpnMode)} " +
+                    "urlTester=${urlTester != null} monitorIntervalMs=${checkIntervalMillis()} " +
+                    "postConnectDelaysMs=${POST_CONNECT_VERIFY_DELAYS_MS.joinToString(",")}",
+        )
         activeUrlTester = urlTester
         activeTrafficSampler = trafficSampler
         DataStore.autoVpnServiceStartRequested = false
@@ -1184,6 +1190,12 @@ object AutoVpnManager {
 
     fun onVpnStopped() {
         val autoRestarting = pendingAutoServiceTransition || DataStore.autoVpnServiceStartRequested
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "vpn-stopped-callback profile=${DataStore.startedProfile} mode=${sanitizeMode(DataStore.autoVpnMode)} " +
+                    "autoRestarting=$autoRestarting immediateVerifyActive=${immediateVerifyJob?.isActive == true} " +
+                    "monitorActive=${monitorJob?.isActive == true}",
+        )
         failures = 0
         monitorJob?.cancel()
         monitorJob = null
@@ -1654,11 +1666,19 @@ object AutoVpnManager {
         )
         monitorJob = runOnDefaultDispatcher {
             try {
+                val monitorStartedAt = System.currentTimeMillis()
+                var tick = 0
                 while (isActive && DataStore.autoVpnEnabled) {
                     delay(checkIntervalMillis())
                     lastMonitorTickAt = System.currentTimeMillis()
                     if (!DataStore.autoVpnEnabled) break
                     if (!SagerNet.started || DataStore.startedProfile <= 0L) continue
+                    tick += 1
+                    DiagnosticLog.critical(
+                        "auto-vpn",
+                        "active-monitor-tick tick=$tick elapsedMs=${System.currentTimeMillis() - monitorStartedAt} " +
+                                "profile=${DataStore.startedProfile} immediateVerifyActive=${immediateVerifyJob?.isActive == true}",
+                    )
                     try {
                         checkActiveProfileOnSchedule()
                     } catch (e: CancellationException) {
@@ -1946,86 +1966,150 @@ object AutoVpnManager {
     }
 
     private fun verifyCurrentSoon(urlTester: (() -> Int)?) {
+        val previousVerifyActive = immediateVerifyJob?.isActive == true
+        if (previousVerifyActive) {
+            DiagnosticLog.event(
+                "auto-vpn",
+                "post-connect-verification-replaced profile=${DataStore.startedProfile} mode=${sanitizeMode(DataStore.autoVpnMode)}",
+            )
+        }
         immediateVerifyJob?.cancel()
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
+        val startedAt = System.currentTimeMillis()
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "post-connect-verification-scheduled profile=$profileId mode=$mode urlTester=${urlTester != null} " +
+                    "delaysMs=${POST_CONNECT_VERIFY_DELAYS_MS.joinToString(",")}",
+        )
         immediateVerifyJob = runOnDefaultDispatcher {
-            if (profileId <= 0L || urlTester == null) return@runOnDefaultDispatcher
-            var connectFailures = 0
-            for ((index, delayMs) in POST_CONNECT_VERIFY_DELAYS_MS.withIndex()) {
-                delay(delayMs)
-                if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
-                setAutoNotificationStatus(mode, R.string.auto_vpn_status_verifying_connected, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
-                if (index == 0 && !verifyConnectedExitCountry(profileId, mode)) {
-                    switchAfterPostConnectFailures(profileId, mode)
+            var outcome = "completed"
+            try {
+                if (profileId <= 0L || urlTester == null) {
+                    outcome = if (profileId <= 0L) "skipped-no-profile" else "skipped-no-url-tester"
                     return@runOnDefaultDispatcher
                 }
-                val ping = testStartedConnection(
-                    profileId,
-                    mode,
-                    urlTester,
-                    scoreEvent = AutoProfileScoreStore.Event.CANDIDATE,
-                )
-                if (ping != null && ping <= badPingMillis()) {
-                    val traffic = verifyRealTrafficPath(profileId, mode, "post-connect")
-                    if (traffic == null) {
-                        if (!hasDirectInternet()) {
-                            deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
-                            return@runOnDefaultDispatcher
-                        }
-                        recordActiveTrafficFailure(
-                            profileId,
-                            mode,
-                            AutoProfileScoreStore.Event.POST_CONNECT,
-                            "post-connect",
-                        )
-                        switchAfterPostConnectFailures(profileId, mode)
+                var connectFailures = 0
+                for ((index, delayMs) in POST_CONNECT_VERIFY_DELAYS_MS.withIndex()) {
+                    delay(delayMs)
+                    if (!isSameStartedAutoProfile(profileId, mode)) {
+                        outcome = "profile-or-mode-changed-before-attempt-${index + 1}"
+                        DiagnosticLog.event("auto-vpn", "post-connect-verification-skipped outcome=$outcome profile=$profileId")
                         return@runOnDefaultDispatcher
                     }
-                    recordActiveTrafficSuccess(
+                    DiagnosticLog.critical(
+                        "auto-vpn",
+                        "post-connect-attempt-start attempt=${index + 1}/${POST_CONNECT_VERIFY_DELAYS_MS.size} " +
+                                "elapsedMs=${System.currentTimeMillis() - startedAt} profile=$profileId mode=$mode",
+                    )
+                    setAutoNotificationStatus(mode, R.string.auto_vpn_status_verifying_connected, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
+                    if (index == 0) {
+                        val countryCheckStartedAt = System.currentTimeMillis()
+                        val countryAccepted = verifyConnectedExitCountry(profileId, mode)
+                        DiagnosticLog.event(
+                            "auto-vpn",
+                            "post-connect-country-check-finished accepted=$countryAccepted " +
+                                    "elapsedMs=${System.currentTimeMillis() - countryCheckStartedAt} profile=$profileId mode=$mode",
+                        )
+                        if (!countryAccepted) {
+                            outcome = "exit-country-rejected"
+                            switchAfterPostConnectFailures(profileId, mode)
+                            return@runOnDefaultDispatcher
+                        }
+                    }
+                    val pingStartedAt = System.currentTimeMillis()
+                    val ping = testStartedConnection(
                         profileId,
                         mode,
-                        traffic,
-                        scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
-                        scoreRecovery = true,
+                        urlTester,
+                        scoreEvent = AutoProfileScoreStore.Event.CANDIDATE,
                     )
-                    failures = 0
-                    setAutoReadyStatus(mode)
-                    return@runOnDefaultDispatcher
+                    DiagnosticLog.event(
+                        "auto-vpn",
+                        "post-connect-attempt-result attempt=${index + 1}/${POST_CONNECT_VERIFY_DELAYS_MS.size} " +
+                                "ping=${ping ?: "error"} elapsedMs=${System.currentTimeMillis() - pingStartedAt} " +
+                                "profile=$profileId mode=$mode",
+                    )
+                    if (ping != null && ping <= badPingMillis()) {
+                        val traffic = verifyRealTrafficPath(profileId, mode, "post-connect")
+                        if (traffic == null) {
+                            if (!hasDirectInternet()) {
+                                outcome = "deferred-no-direct-network"
+                                deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                                return@runOnDefaultDispatcher
+                            }
+                            recordActiveTrafficFailure(
+                                profileId,
+                                mode,
+                                AutoProfileScoreStore.Event.POST_CONNECT,
+                                "post-connect",
+                            )
+                            outcome = "traffic-failed"
+                            switchAfterPostConnectFailures(profileId, mode)
+                            return@runOnDefaultDispatcher
+                        }
+                        recordActiveTrafficSuccess(
+                            profileId,
+                            mode,
+                            traffic,
+                            scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
+                            scoreRecovery = true,
+                        )
+                        failures = 0
+                        setAutoReadyStatus(mode)
+                        outcome = "ready"
+                        return@runOnDefaultDispatcher
+                    }
+                    if (ping != null) {
+                        setActiveFailureStatus(mode, ping, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
+                    } else {
+                        setActiveFailureStatus(mode, null, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
+                    }
+                    connectFailures += 1
                 }
-                if (ping != null) {
-                    setActiveFailureStatus(mode, ping, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
-                } else {
-                    setActiveFailureStatus(mode, null, index + 1, POST_CONNECT_VERIFY_DELAYS_MS.size)
-                }
-                connectFailures += 1
-            }
 
-            if (connectFailures >= POST_CONNECT_VERIFY_DELAYS_MS.size) {
-                val traffic = verifyRealTrafficPath(profileId, mode, "post-connect-fallback")
-                if (traffic != null) {
-                    recordActiveTrafficSuccess(
+                if (connectFailures >= POST_CONNECT_VERIFY_DELAYS_MS.size) {
+                    val traffic = verifyRealTrafficPath(profileId, mode, "post-connect-fallback")
+                    if (traffic != null) {
+                        recordActiveTrafficSuccess(
+                            profileId,
+                            mode,
+                            traffic,
+                            scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
+                            scoreRecovery = true,
+                        )
+                        failures = 0
+                        setAutoReadyStatus(mode)
+                        outcome = "ready-after-fallback"
+                        return@runOnDefaultDispatcher
+                    }
+                    if (!hasDirectInternet()) {
+                        outcome = "deferred-no-direct-network-after-failures"
+                        deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                        return@runOnDefaultDispatcher
+                    }
+                    recordActiveTrafficFailure(
                         profileId,
                         mode,
-                        traffic,
-                        scoreEvent = AutoProfileScoreStore.Event.POST_CONNECT,
-                        scoreRecovery = true,
+                        AutoProfileScoreStore.Event.POST_CONNECT,
+                        "post-connect-fallback",
                     )
-                    failures = 0
-                    setAutoReadyStatus(mode)
-                    return@runOnDefaultDispatcher
+                    outcome = "switched-after-three-failures"
+                    switchAfterPostConnectFailures(profileId, mode)
                 }
-                if (!hasDirectInternet()) {
-                    deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
-                    return@runOnDefaultDispatcher
-                }
-                recordActiveTrafficFailure(
-                    profileId,
-                    mode,
-                    AutoProfileScoreStore.Event.POST_CONNECT,
-                    "post-connect-fallback",
+            } catch (e: CancellationException) {
+                outcome = "cancelled"
+                throw e
+            } catch (e: Exception) {
+                outcome = "error-${e.javaClass.simpleName}"
+                DiagnosticLog.error("auto-vpn", "post-connect-verification-failed profile=$profileId mode=$mode", e)
+                Logs.w(e)
+            } finally {
+                DiagnosticLog.critical(
+                    "auto-vpn",
+                    "post-connect-verification-finished outcome=$outcome elapsedMs=${System.currentTimeMillis() - startedAt} " +
+                            "profile=$profileId mode=$mode stillCurrent=${isSameStartedAutoProfile(profileId, mode)}",
                 )
-                switchAfterPostConnectFailures(profileId, mode)
             }
         }
     }
