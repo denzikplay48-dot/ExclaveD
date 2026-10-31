@@ -40,6 +40,7 @@ import io.nekohasekai.sagernet.ktx.*
 import java.io.BufferedReader
 import java.io.StringReader
 import java.util.Properties
+import java.util.UUID
 
 private val DEFAULT_BYPASS_APPS = """
     ru.dublgis.dgismobile
@@ -114,7 +115,6 @@ private val DEFAULT_BYPASS_APPS = """
     ru.rzd.pass
     ru.sberbank.investor
 """.trimIndent().trimEnd().lines().distinct().joinToString("\n")
-import java.util.UUID
 
 object DataStore : OnPreferenceDataStoreChangeListener {
 
