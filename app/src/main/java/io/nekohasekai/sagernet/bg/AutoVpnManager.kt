@@ -43,6 +43,7 @@ import io.nekohasekai.sagernet.utils.DefaultNetworkListener
 import io.nekohasekai.sagernet.utils.DiagnosticLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,6 +51,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.SupervisorJob
@@ -1621,6 +1623,9 @@ object AutoVpnManager {
                             countProgress,
                             throttle,
                             onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                            stopAfterWorking = if (scanAllAvailable) null else {
+                                (target - reserveCount(safeMode)).coerceAtLeast(1)
+                            },
                         )
                     )
                     if (tested.isEmpty()) continue
@@ -2744,8 +2749,9 @@ object AutoVpnManager {
         val workingLimit = stopAfterWorking?.coerceAtLeast(1)
         var workingCount = 0
         val workingLock = Any()
-        val jobs = candidates.map { profile ->
-            candidateTestScope.launch {
+        val jobs = ArrayList<Job>(candidates.size)
+        for (profile in candidates) {
+            jobs += candidateTestScope.launch(start = CoroutineStart.LAZY) {
                 semaphore.withPermit {
                     throttle?.waitForPause()
                     val outcome = testProfileOutcome(
@@ -2756,35 +2762,62 @@ object AutoVpnManager {
                     // A native test can finish after its batch has already selected a
                     // candidate. Do not let that stale tail mutate live scan progress.
                     if (!isActive) return@withPermit
-                    outcome.result?.let { result ->
+                    val hasWorkingResult = outcome.result != null
+                    val acceptedWorkingResult = if (hasWorkingResult) {
                         synchronized(workingLock) {
-                            workingCount += 1
+                            if (workingLimit == null || workingCount < workingLimit) {
+                                workingCount += 1
+                                true
+                            } else {
+                                false
+                            }
                         }
-                        onWorkingResult?.invoke(result)
+                    } else {
+                        false
                     }
+                    if (acceptedWorkingResult) outcome.result?.let { onWorkingResult?.invoke(it) }
                     if (throttle != null) {
                         synchronized(throttleLock) {
                             throttle.record(outcome)
                         }
                     }
                     if (countProgress) {
-                        recordAutoTestResult(outcome.result != null)
+                        recordAutoTestResult(acceptedWorkingResult)
                     }
-                    outcomes += outcome
+                    outcomes += if (hasWorkingResult && !acceptedWorkingResult) {
+                        outcome.copy(result = null)
+                    } else {
+                        outcome
+                    }
+
+                    if (acceptedWorkingResult && workingLimit != null &&
+                        synchronized(workingLock) { workingCount >= workingLimit }
+                    ) {
+                        val pending = jobs.count { it.isActive }
+                        val reachedCount = synchronized(workingLock) { workingCount }
+                        DiagnosticLog.critical(
+                            "auto-vpn",
+                            "candidate-batch-target-reached mode=$mode working=$reachedCount target=$workingLimit " +
+                                    "batch=${candidates.size} pendingCancelled=$pending",
+                        )
+                        jobs.forEach { it.cancel() }
+                    }
                 }
             }
         }
+        jobs.forEach { it.start() }
 
         try {
             while (jobs.any { it.isActive }) {
                 if (workingLimit != null && synchronized(workingLock) { workingCount >= workingLimit }) {
+                    val reachedCount = synchronized(workingLock) { workingCount }
                     DiagnosticLog.critical(
                         "auto-vpn",
-                        "candidate-batch-target-reached mode=$mode working=$workingCount target=$workingLimit " +
+                        "candidate-batch-target-reached mode=$mode working=$reachedCount target=$workingLimit " +
                                 "batch=${candidates.size}"
                     )
                     val pending = jobs.count { it.isActive }
-                    jobs.filter { it.isActive }.forEach { it.cancel() }
+                    jobs.forEach { it.cancel() }
                     DiagnosticLog.critical(
                         "auto-vpn",
                         "candidate-batch-return-early mode=$mode completed=${outcomes.size} " +
@@ -2794,9 +2827,10 @@ object AutoVpnManager {
                 }
                 delay(20L)
             }
+            jobs.joinAll()
         } catch (e: CancellationException) {
             val pending = jobs.count { it.isActive }
-            jobs.filter { it.isActive }.forEach { it.cancel() }
+            jobs.forEach { it.cancel() }
             DiagnosticLog.critical(
                 "auto-vpn",
                 "candidate-batch-cancelled mode=$mode completed=${outcomes.size} " +
