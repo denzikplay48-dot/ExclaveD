@@ -294,6 +294,8 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 45 }
     var autoVpnGeminiTestUrl by configurationStore.string(Key.AUTO_VPN_GEMINI_TEST_URL) { "https://gemini.google.com/" }
     var autoVpnGeminiRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_GEMINI_REJECTED_KEYS)
+    var autoVpnExitCountryRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_KEYS)
+    var autoVpnExitCountryRejectedRevision by configurationStore.long(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_REVISION)
     var autoVpnProfileScoreStats by configurationStore.string(Key.AUTO_VPN_PROFILE_SCORE_STATS)
     var autoVpnStatusText by configurationStore.string(Key.AUTO_VPN_STATUS_TEXT)
     var autoVpnDetailStatusText by configurationStore.string(Key.AUTO_VPN_DETAIL_STATUS_TEXT)

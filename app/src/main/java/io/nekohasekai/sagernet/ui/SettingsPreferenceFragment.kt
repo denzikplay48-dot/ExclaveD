@@ -396,6 +396,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         val autoVpnQuarantine = findPreference<EditTextPreference>(Key.AUTO_VPN_QUARANTINE_MINUTES)!!
         val autoVpnGeminiTestUrl = findPreference<EditTextPreference>(Key.AUTO_VPN_GEMINI_TEST_URL)!!
         val autoVpnResetGeminiRejected = findPreference<Preference>(Key.AUTO_VPN_RESET_GEMINI_REJECTED)!!
+        val autoVpnResetExitCountryRejected = findPreference<Preference>(Key.AUTO_VPN_RESET_EXIT_COUNTRY_REJECTED)!!
         val subscriptionGlobalAutoUpdate = findPreference<SwitchPreference>(Key.SUBSCRIPTION_GLOBAL_AUTO_UPDATE)!!
         val subscriptionGlobalAutoUpdateDelay = findPreference<EditTextPreference>(Key.SUBSCRIPTION_GLOBAL_AUTO_UPDATE_DELAY)!!
         val subscriptionVpnBackgroundUpdate = findPreference<SwitchPreference>(Key.SUBSCRIPTION_VPN_BACKGROUND_UPDATE)!!
@@ -521,6 +522,15 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
             Toast.makeText(
                 requireContext(),
                 getString(R.string.auto_vpn_reset_gemini_rejected_done, count),
+                Toast.LENGTH_SHORT,
+            ).show()
+            true
+        }
+        autoVpnResetExitCountryRejected.setOnPreferenceClickListener {
+            val count = AutoVpnManager.resetExitCountryRejectedProfiles()
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.auto_vpn_reset_exit_country_rejected_done, count),
                 Toast.LENGTH_SHORT,
             ).show()
             true

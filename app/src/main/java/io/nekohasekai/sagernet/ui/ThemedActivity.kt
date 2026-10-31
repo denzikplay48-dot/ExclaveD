@@ -22,6 +22,7 @@ package io.nekohasekai.sagernet.ui
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.annotation.StringRes
@@ -99,6 +100,16 @@ abstract class ThemedActivity : AppCompatActivity {
             }
             insets
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onStop() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        super.onStop()
     }
 
     override fun setTheme(resId: Int) {

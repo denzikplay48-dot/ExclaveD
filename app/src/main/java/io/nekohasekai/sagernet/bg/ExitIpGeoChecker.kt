@@ -10,7 +10,7 @@ import java.net.URL
 import java.util.Locale
 
 object ExitIpGeoChecker {
-    private const val GEOIP_URL = "https://api.ip.sb/geoip"
+    const val GEOIP_URL = "https://api.ip.sb/geoip"
     private const val TIMEOUT_MILLIS = 4_000
 
     data class GeoInfo(val countryCode: String?, val countryName: String?)
