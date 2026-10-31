@@ -1861,6 +1861,7 @@ class ConfigurationFragment @JvmOverloads constructor(
         lateinit var proxyGroup: ProxyGroup
         var selected = false
         var scrolled = false
+        private var individualPingRequestPending = false
 
         override fun onCreateView(
             inflater: LayoutInflater,
@@ -2115,7 +2116,6 @@ class ConfigurationFragment @JvmOverloads constructor(
             private val configurationIndex = HashMap<Long, Int>()
             val pendingDeletedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
             private val pendingProfileRowUpdates = java.util.concurrent.ConcurrentHashMap<Long, ProxyEntity>()
-            private var individualPingRequestPending = false
             private var filterText = ""
             private var nextOffset = 0
             private var hasMorePages = false
