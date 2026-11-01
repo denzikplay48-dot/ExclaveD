@@ -52,18 +52,28 @@ object GroupSourceSyncer {
     private const val WORK_NAME = "GroupSourceSyncer"
     private const val VPN_WORK_NAME = "GroupSourceVpnSyncer"
     private const val KEY_RETRY_ATTEMPT = "retryAttempt"
+    const val INITIAL_SYNC_PROMPT_HANDLED_KEY = "initialGroupSourceSyncPromptHandledV2"
     private const val KEY_SEPARATOR = "\u001F"
     private const val CONFIG_SOURCE_KEY = "\u001Fgroup-source-configs"
     private const val CONFIG_SOURCE_FILE = "group_source_configs.txt"
     private const val CONFIG_SOURCE_NAME = "local"
     private val syncMutex = Mutex()
 
+    fun isInitialSyncPromptHandled(): Boolean {
+        return DataStore.configurationStore.getBoolean(INITIAL_SYNC_PROMPT_HANDLED_KEY) == true
+    }
+
+    fun markInitialSyncPromptHandled() {
+        DataStore.configurationStore.putBoolean(INITIAL_SYNC_PROMPT_HANDLED_KEY, true)
+    }
+
     fun isVpnRunning(): Boolean {
         return DataStore.serviceMode == Key.MODE_VPN && DataStore.startedProfile > 0L
     }
 
     fun shouldOwnVpnSync(): Boolean {
-        return DataStore.groupSourceSyncEnabled &&
+        return isInitialSyncPromptHandled() &&
+                DataStore.groupSourceSyncEnabled &&
                 DataStore.groupSourceVpnSyncEnabled &&
                 DataStore.groupSourceUrl.trim().isNotBlank() &&
                 isVpnRunning()
@@ -116,6 +126,13 @@ object GroupSourceSyncer {
         if (!DataStore.groupSourceSyncEnabled || DataStore.groupSourceUrl.trim().isBlank()) {
             RemoteWorkManager.getInstance(app).cancelUniqueWork(WORK_NAME)
             cancelVpnSync()
+            return
+        }
+
+        if (!isInitialSyncPromptHandled()) {
+            RemoteWorkManager.getInstance(app).cancelUniqueWork(WORK_NAME)
+            cancelVpnSync()
+            Logs.d("Group source sync deferred until the initial sync choice")
             return
         }
 
@@ -677,6 +694,10 @@ object GroupSourceSyncer {
     ) : CoroutineWorker(appContext, params) {
 
         override suspend fun doWork(): Result {
+            if (!isInitialSyncPromptHandled()) {
+                Logs.d("GroupSourceSyncer skipped periodic sync until the initial sync choice")
+                return Result.success()
+            }
             if (shouldOwnVpnSync()) {
                 Logs.d("GroupSourceSyncer skipped periodic sync: VPN sync loop is active")
                 return Result.success()
@@ -698,6 +719,10 @@ object GroupSourceSyncer {
     ) : CoroutineWorker(appContext, params) {
 
         override suspend fun doWork(): Result {
+            if (!isInitialSyncPromptHandled()) {
+                Logs.d("GroupSourceVpnSyncer skipped until the initial sync choice")
+                return Result.success()
+            }
             if (!shouldOwnVpnSync()) return Result.success()
 
             val retryAttempt = inputData.getInt(KEY_RETRY_ATTEMPT, 0).coerceAtLeast(0)

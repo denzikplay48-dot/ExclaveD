@@ -29,7 +29,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.RemoteException
 import android.provider.Settings
-import android.text.util.Linkify
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MenuItem
@@ -78,7 +77,6 @@ import io.nekohasekai.sagernet.ktx.*
 import io.nekohasekai.sagernet.utils.DiagnosticLog
 import io.nekohasekai.sagernet.utils.PackageCache
 import io.noties.markwon.Markwon
-import libsagernetcore.Libsagernetcore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -213,66 +211,6 @@ class MainActivity : ThemedActivity(),
             onNewIntent(intent)
         }
 
-        if (!licenseAccepted()) {
-            runOnMainDispatcher {
-                AlertDialog.Builder(this@MainActivity).apply {
-                    setTitle(R.string.license)
-                    setView(
-                        TextView(this@MainActivity).apply {
-                            setPadding(dp2px(16))
-                            text = getString(
-                                if (Libsagernetcore.buildWithClash()) {
-                                    R.string.license_gpl_v3_only
-                                } else {
-                                    R.string.license_gpl_v3_or_later
-                                }
-                            )
-                            setTextIsSelectable(true)
-                            Linkify.addLinks(this, Linkify.EMAIL_ADDRESSES or Linkify.WEB_URLS)
-                        }
-                    )
-                    setPositiveButton(android.R.string.ok) { _, _ ->
-                        DataStore.configurationStore.putBoolean(
-                            if (Libsagernetcore.buildWithClash()) "gplv3OnlyAccepted"
-                            else "gplv3OrLaterAccepted", true)
-                        if (DataStore.configurationStore.getBoolean("permissionRequested") != true) {
-                            DataStore.configurationStore.putBoolean("permissionRequested", true)
-                            PackageCache.awaitLoadSync()
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                if (app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                                    ActivityCompat.requestPermissions(this@MainActivity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-                                }
-                            }
-                        }
-                        scheduleInitialGroupSourceSyncPrompt()
-                        scheduleReleaseUpdateCheck()
-                    }
-                    setOnCancelListener { _ ->
-                        DataStore.configurationStore.putBoolean(
-                            if (Libsagernetcore.buildWithClash()) "gplv3OnlyAccepted"
-                            else "gplv3OrLaterAccepted", true)
-                        if (DataStore.configurationStore.getBoolean("permissionRequested") != true) {
-                            DataStore.configurationStore.putBoolean("permissionRequested", true)
-                            PackageCache.awaitLoadSync()
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                if (app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                                    ActivityCompat.requestPermissions(this@MainActivity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-                                }
-                            }
-                        }
-                        scheduleInitialGroupSourceSyncPrompt()
-                        scheduleReleaseUpdateCheck()
-                    }
-                }.show()
-            }
-        }
-    }
-
-    private fun licenseAccepted(): Boolean {
-        return DataStore.configurationStore.getBoolean(
-            if (Libsagernetcore.buildWithClash()) "gplv3OnlyAccepted"
-            else "gplv3OrLaterAccepted"
-        ) == true
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -832,15 +770,17 @@ class MainActivity : ThemedActivity(),
             "MainActivity.onResume state=$state profileTest=${ProfileTestRunner.diagnosticStateSummary()} " +
                     "${DiagnosticLog.stateSummary()}"
         )
-        AutoVpnManager.refreshNetworkStatus("main-activity-resume")
         scheduleInitialGroupSourceSyncPrompt()
         scheduleReleaseUpdateCheck()
+        AutoVpnManager.refreshNetworkStatus("main-activity-resume")
     }
 
     private fun scheduleInitialGroupSourceSyncPrompt() {
-        if (initialGroupSourceSyncPromptScheduled || !licenseAccepted()) return
-        val preferences = DataStore.configurationStore
-        if (preferences.getBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY) == true) return
+        if (initialGroupSourceSyncPromptScheduled) return
+        if (GroupSourceSyncer.isInitialSyncPromptHandled()) {
+            requestInitialNotificationPermission()
+            return
+        }
 
         initialGroupSourceSyncPromptScheduled = true
         initialGroupSourceSyncPromptPending = true
@@ -855,15 +795,12 @@ class MainActivity : ThemedActivity(),
                 }
             } catch (e: Exception) {
                 Logs.w(e)
-                initialGroupSourceSyncPromptPending = false
-                scheduleReleaseUpdateCheck()
-                return@launch
+                0L
             }
 
             if (profileCount > 0L) {
-                preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
-                initialGroupSourceSyncPromptPending = false
-                scheduleReleaseUpdateCheck()
+                GroupSourceSyncer.markInitialSyncPromptHandled()
+                finishInitialGroupSourceSyncPrompt()
                 return@launch
             }
 
@@ -874,11 +811,11 @@ class MainActivity : ThemedActivity(),
                     startInitialGroupSourceSync()
                 }
                 .setNegativeButton(R.string.initial_group_source_sync_later) { _, _ ->
-                    preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    GroupSourceSyncer.markInitialSyncPromptHandled()
                     finishInitialGroupSourceSyncPrompt()
                 }
                 .setOnCancelListener {
-                    preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    GroupSourceSyncer.markInitialSyncPromptHandled()
                     finishInitialGroupSourceSyncPrompt()
                 }
                 .show()
@@ -946,7 +883,7 @@ class MainActivity : ThemedActivity(),
                 }
                 if (progressDialog.isShowing) progressDialog.dismiss()
                 if (completed) {
-                    DataStore.configurationStore.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    GroupSourceSyncer.markInitialSyncPromptHandled()
                     finishInitialGroupSourceSyncPrompt()
                 } else {
                     initialGroupSourceSyncPromptPending = false
@@ -957,11 +894,32 @@ class MainActivity : ThemedActivity(),
 
     private fun finishInitialGroupSourceSyncPrompt() {
         initialGroupSourceSyncPromptPending = false
-        if (!isFinishing && !isDestroyed) scheduleReleaseUpdateCheck()
+        if (!isFinishing && !isDestroyed) {
+            requestInitialNotificationPermission()
+            runOnDefaultDispatcher { GroupSourceSyncer.reconfigureSync() }
+            scheduleReleaseUpdateCheck()
+        }
+    }
+
+    private fun requestInitialNotificationPermission() {
+        val preferences = DataStore.configurationStore
+        if (preferences.getBoolean("permissionRequested") == true) return
+
+        preferences.putBoolean("permissionRequested", true)
+        PackageCache.awaitLoadSync()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                0,
+            )
+        }
     }
 
     private fun scheduleReleaseUpdateCheck() {
-        if (releaseUpdateCheckScheduled || initialGroupSourceSyncPromptPending || !licenseAccepted()) return
+        if (releaseUpdateCheckScheduled || initialGroupSourceSyncPromptPending) return
         releaseUpdateCheckScheduled = true
         lifecycleScope.launch {
             delay(1200)
@@ -1224,7 +1182,6 @@ class MainActivity : ThemedActivity(),
     }
 
     private companion object {
-        const val INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY = "initialGroupSourceSyncPromptHandled"
         const val ALL_GROUP_ID = 0L
     }
 
