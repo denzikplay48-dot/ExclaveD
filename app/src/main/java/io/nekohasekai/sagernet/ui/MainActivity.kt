@@ -30,6 +30,7 @@ import android.os.Bundle
 import android.os.RemoteException
 import android.provider.Settings
 import android.text.util.Linkify
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MenuItem
 import android.view.View
@@ -60,6 +61,7 @@ import io.nekohasekai.sagernet.aidl.ISagerNetService
 import io.nekohasekai.sagernet.aidl.TrafficStats
 import io.nekohasekai.sagernet.bg.BaseService
 import io.nekohasekai.sagernet.bg.AutoVpnManager
+import io.nekohasekai.sagernet.bg.GroupSourceSyncer
 import io.nekohasekai.sagernet.bg.ProfileTestRunner
 import io.nekohasekai.sagernet.bg.SagerConnection
 import io.nekohasekai.sagernet.database.*
@@ -97,6 +99,9 @@ class MainActivity : ThemedActivity(),
     lateinit var navigation: NavigationView
     private var releaseUpdateCheckScheduled = false
     private var releaseUpdateCheckJob: Job? = null
+    private var initialGroupSourceSyncPromptScheduled = false
+    private var initialGroupSourceSyncPromptPending = false
+    private var initialGroupSourceSyncProgressDialog: AlertDialog? = null
     private var appUpdateJob: Job? = null
     private var appUpdateDownloader: AppUpdateDownloader? = null
     private var pendingUpdateInstall: File? = null
@@ -239,6 +244,7 @@ class MainActivity : ThemedActivity(),
                                 }
                             }
                         }
+                        scheduleInitialGroupSourceSyncPrompt()
                         scheduleReleaseUpdateCheck()
                     }
                     setOnCancelListener { _ ->
@@ -254,6 +260,7 @@ class MainActivity : ThemedActivity(),
                                 }
                             }
                         }
+                        scheduleInitialGroupSourceSyncPrompt()
                         scheduleReleaseUpdateCheck()
                     }
                 }.show()
@@ -826,11 +833,135 @@ class MainActivity : ThemedActivity(),
                     "${DiagnosticLog.stateSummary()}"
         )
         AutoVpnManager.refreshNetworkStatus("main-activity-resume")
+        scheduleInitialGroupSourceSyncPrompt()
         scheduleReleaseUpdateCheck()
     }
 
+    private fun scheduleInitialGroupSourceSyncPrompt() {
+        if (initialGroupSourceSyncPromptScheduled || !licenseAccepted()) return
+        val preferences = DataStore.configurationStore
+        if (preferences.getBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY) == true) return
+
+        initialGroupSourceSyncPromptScheduled = true
+        initialGroupSourceSyncPromptPending = true
+        lifecycleScope.launch {
+            delay(700)
+            if (isFinishing || isDestroyed) return@launch
+
+            val profileCount = try {
+                withContext(Dispatchers.IO) {
+                    val groupIds = SagerDatabase.groupDao.allGroups().map { it.id }
+                    if (groupIds.isEmpty()) 0L else SagerDatabase.proxyDao.countByGroups(groupIds)
+                }
+            } catch (e: Exception) {
+                Logs.w(e)
+                initialGroupSourceSyncPromptPending = false
+                scheduleReleaseUpdateCheck()
+                return@launch
+            }
+
+            if (profileCount > 0L) {
+                preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                initialGroupSourceSyncPromptPending = false
+                scheduleReleaseUpdateCheck()
+                return@launch
+            }
+
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.initial_group_source_sync_title)
+                .setMessage(R.string.initial_group_source_sync_message)
+                .setPositiveButton(R.string.initial_group_source_sync_action) { _, _ ->
+                    startInitialGroupSourceSync()
+                }
+                .setNegativeButton(R.string.initial_group_source_sync_later) { _, _ ->
+                    preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    finishInitialGroupSourceSyncPrompt()
+                }
+                .setOnCancelListener {
+                    preferences.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    finishInitialGroupSourceSyncPrompt()
+                }
+                .show()
+        }
+    }
+
+    private fun startInitialGroupSourceSync() {
+        val progressContent = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp2px(24), dp2px(12), dp2px(24), dp2px(12))
+            addView(
+                ProgressBar(this@MainActivity),
+                LinearLayout.LayoutParams(dp2px(32), dp2px(32)),
+            )
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = getString(R.string.group_source_sync_in_progress)
+                    setPadding(dp2px(16), 0, 0, 0)
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1F),
+            )
+        }
+        val progressDialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.group_source_sync)
+            .setView(progressContent)
+            .setCancelable(false)
+            .create()
+        initialGroupSourceSyncProgressDialog = progressDialog
+        progressDialog.show()
+
+        lifecycleScope.launch {
+            var completed = false
+            try {
+                val summary = withContext(Dispatchers.Default) { GroupSourceSyncer.syncNow() }
+                DataStore.selectedGroup = ALL_GROUP_ID
+                displayFragmentWithId(R.id.nav_configuration)
+                if (summary.disabled) {
+                    snackbar(R.string.group_source_sync_disabled).show()
+                } else {
+                    snackbar(
+                        getString(
+                            R.string.group_source_sync_result,
+                            summary.added,
+                            summary.kept,
+                            summary.removed,
+                        )
+                    ).show()
+                    if (summary.updateGroups.isNotEmpty()) {
+                        SubscriptionUpdateDialog.showManual(this@MainActivity, summary.updateGroups)
+                    }
+                }
+                completed = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Logs.w(e)
+                DataStore.selectedGroup = ALL_GROUP_ID
+                displayFragmentWithId(R.id.nav_configuration)
+                snackbar(getString(R.string.group_source_sync_error, e.readableMessage)).show()
+                completed = true
+            } finally {
+                if (initialGroupSourceSyncProgressDialog === progressDialog) {
+                    initialGroupSourceSyncProgressDialog = null
+                }
+                if (progressDialog.isShowing) progressDialog.dismiss()
+                if (completed) {
+                    DataStore.configurationStore.putBoolean(INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY, true)
+                    finishInitialGroupSourceSyncPrompt()
+                } else {
+                    initialGroupSourceSyncPromptPending = false
+                }
+            }
+        }
+    }
+
+    private fun finishInitialGroupSourceSyncPrompt() {
+        initialGroupSourceSyncPromptPending = false
+        if (!isFinishing && !isDestroyed) scheduleReleaseUpdateCheck()
+    }
+
     private fun scheduleReleaseUpdateCheck() {
-        if (releaseUpdateCheckScheduled || !licenseAccepted()) return
+        if (releaseUpdateCheckScheduled || initialGroupSourceSyncPromptPending || !licenseAccepted()) return
         releaseUpdateCheckScheduled = true
         lifecycleScope.launch {
             delay(1200)
@@ -1063,6 +1194,8 @@ class MainActivity : ThemedActivity(),
         if (isFinishing && !isChangingConfigurations) DiagnosticLog.endAutoSearchSessionAndClear()
         appUpdateDownloader?.cancel()
         appUpdateJob?.cancel()
+        initialGroupSourceSyncProgressDialog?.dismiss()
+        initialGroupSourceSyncProgressDialog = null
         super.onDestroy()
         DataStore.configurationStore.unregisterChangeListener(this)
         connection.disconnect(this)
@@ -1088,6 +1221,11 @@ class MainActivity : ThemedActivity(),
 
         val fragment = supportFragmentManager.findFragmentById(R.id.fragment_holder) as? ToolbarFragment
         return fragment != null && fragment.onKeyDown(keyCode, event)
+    }
+
+    private companion object {
+        const val INITIAL_GROUP_SOURCE_SYNC_PROMPT_KEY = "initialGroupSourceSyncPromptHandled"
+        const val ALL_GROUP_ID = 0L
     }
 
 }
