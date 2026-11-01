@@ -1821,7 +1821,9 @@ class ConfigurationFragment @JvmOverloads constructor(
 
         override suspend fun onAdd(profile: ProxyEntity) {
             if (groupList.find { it.id == profile.groupId } == null) {
-                DataStore.selectedGroup = profile.groupId
+                if (DataStore.selectedGroup != ALL_GROUP_ID) {
+                    DataStore.selectedGroup = profile.groupId
+                }
                 reload()
             } else {
                 refreshGroupTabs(profile.groupId)
@@ -1831,7 +1833,9 @@ class ConfigurationFragment @JvmOverloads constructor(
         override suspend fun onAdded(profiles: List<ProxyEntity>) {
             val groupIds = profiles.mapTo(mutableSetOf()) { it.groupId }
             if (groupIds.any { groupId -> groupList.find { it.id == groupId } == null }) {
-                DataStore.selectedGroup = profiles.firstOrNull()?.groupId ?: DataStore.selectedGroup
+                if (DataStore.selectedGroup != ALL_GROUP_ID) {
+                    DataStore.selectedGroup = profiles.firstOrNull()?.groupId ?: DataStore.selectedGroup
+                }
                 reload()
             } else {
                 refreshGroupTabs(*groupIds.toLongArray())
