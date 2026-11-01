@@ -1371,61 +1371,77 @@ object AutoVpnManager {
 
             // Keep one stable ordering for the whole round. The delay sort changes as tests
             // complete, so OFFSET paging could otherwise make a round appear to restart early.
-            val snapshot = AutoProfileScoreStore.orderForScan(autoScanProfiles(groupIds), safeMode)
-            if (snapshot.isEmpty()) break
+            val scanPhases = AutoProfileScoreStore.partitionForScan(autoScanProfiles(groupIds), safeMode)
+            val scannedTotal = scanPhases.totalProfiles
+            if (scannedTotal == 0) break
             var testedAnyInCycle = false
             var keepScanning = true
 
-            pageLoop@ for (page in snapshot.chunked(AUTO_SCAN_PAGE_SIZE)) {
-                if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode || working.size >= target) {
+            phaseLoop@ for ((phaseIndex, phaseProfiles) in listOf(scanPhases.vip, scanPhases.regular).withIndex()) {
+                val vipPhase = phaseIndex == 0
+                if (phaseProfiles.isEmpty()) continue
+                if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
+                    (!vipPhase && working.size >= target)
+                ) {
                     keepScanning = false
-                    break@pageLoop
-                }
-                if (System.currentTimeMillis() - windowStartedAt >= initialSelectionWindowMillis()) {
-                    if (working.isNotEmpty()) {
-                        keepScanning = false
-                        break@pageLoop
-                    }
-                    windowStartedAt = System.currentTimeMillis()
+                    break@phaseLoop
                 }
 
-                val dynamicExcluded = excludedIds + currentProfileIds() + working.map { it.profile.id }
-                val candidates = page.asSequence()
-                    .filter { it.id !in dynamicExcluded }
-                    .filter { profileAllowed(it, safeMode) }
-                    .filterNot { isMarkedFailed(it.id) }
-                    .toList()
-                if (countProgress) recordAutoSkippedResults(page.size - candidates.size)
-
-                for (chunk in candidates.chunked(parallel)) {
-                    if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode || working.size >= target) {
+                for (page in phaseProfiles.chunked(AUTO_SCAN_PAGE_SIZE)) {
+                    if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
+                        (!vipPhase && working.size >= target)
+                    ) {
                         keepScanning = false
-                        break@pageLoop
+                        break@phaseLoop
                     }
-                    val testChunk = chunk.filter { markScanned(safeMode, it.id) }
-                    if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
-                    if (testChunk.isEmpty()) continue
-                    testedAnyInCycle = true
-                    val tested = sortCandidatesByScore(
-                        testCandidates(
-                            testChunk,
+                    if (System.currentTimeMillis() - windowStartedAt >= initialSelectionWindowMillis()) {
+                        if (working.isNotEmpty()) {
+                            keepScanning = false
+                            break@phaseLoop
+                        }
+                        windowStartedAt = System.currentTimeMillis()
+                    }
+
+                    val dynamicExcluded = excludedIds + currentProfileIds() + working.map { it.profile.id }
+                    val candidates = page.asSequence()
+                        .filter { it.id !in dynamicExcluded }
+                        .filter { profileAllowed(it, safeMode) }
+                        .filterNot { isMarkedFailed(it.id) }
+                        .toList()
+                    if (countProgress) recordAutoSkippedResults(page.size - candidates.size)
+
+                    for (chunk in candidates.chunked(parallel)) {
+                        if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
+                            (!vipPhase && working.size >= target)
+                        ) {
+                            keepScanning = false
+                            break@phaseLoop
+                        }
+                        val testChunk = chunk.filter { markScanned(safeMode, it.id) }
+                        if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
+                        if (testChunk.isEmpty()) continue
+                        testedAnyInCycle = true
+                        val tested = sortCandidatesByScore(
+                            testCandidates(
+                                testChunk,
+                                safeMode,
+                                countProgress,
+                                throttle,
+                                onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                            ),
                             safeMode,
-                            countProgress,
-                            throttle,
-                            onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
-                        ),
-                        safeMode,
-                    )
-                    if (tested.isEmpty()) continue
+                        )
+                        if (tested.isEmpty()) continue
 
-                    rememberWorkingResults(safeMode, tested)
-                    working += tested
-                    setAutoStatus(safeMode, R.string.auto_vpn_status_testing_more)
+                        rememberWorkingResults(safeMode, tested)
+                        working += tested
+                        setAutoStatus(safeMode, R.string.auto_vpn_status_testing_more)
+                    }
                 }
             }
 
             if (!keepScanning || working.size >= target) break
-            if (!restartAutoScanCycle(safeMode, snapshot.size, testedAnyInCycle)) break
+            if (!restartAutoScanCycle(safeMode, scannedTotal, testedAnyInCycle)) break
             if (working.isEmpty()) windowStartedAt = System.currentTimeMillis()
         }
 
@@ -1454,76 +1470,88 @@ object AutoVpnManager {
             DataStore.autoVpnMode == safeMode &&
             (scanAllAvailable || reserveCount(safeMode) < target)
         ) {
-            val snapshot = AutoProfileScoreStore.orderForScan(autoScanProfiles(groupIds), safeMode)
-            if (snapshot.isEmpty()) break
+            val scanPhases = AutoProfileScoreStore.partitionForScan(autoScanProfiles(groupIds), safeMode)
+            val scannedTotal = scanPhases.totalProfiles
+            if (scannedTotal == 0) break
             var testedAnyInCycle = false
             var keepScanning = true
 
-            pageLoop@ for (page in snapshot.chunked(AUTO_SCAN_PAGE_SIZE)) {
+            phaseLoop@ for ((phaseIndex, phaseProfiles) in listOf(scanPhases.vip, scanPhases.regular).withIndex()) {
+                val vipPhase = phaseIndex == 0
+                if (phaseProfiles.isEmpty()) continue
                 if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
-                    (!scanAllAvailable && reserveCount(safeMode) >= target)
+                    (!vipPhase && !scanAllAvailable && reserveCount(safeMode) >= target)
                 ) {
                     keepScanning = false
-                    break@pageLoop
+                    break@phaseLoop
                 }
 
-                val dynamicExcluded = excludedIds + currentProfileIds() + reserveProfileIds(safeMode)
-                val candidates = page.asSequence()
-                    .filter { it.id !in dynamicExcluded }
-                    .filter { profileAllowed(it, safeMode) }
-                    .filterNot { isMarkedFailed(it.id) }
-                    .toList()
-                if (countProgress) recordAutoSkippedResults(page.size - candidates.size)
-
-                for (chunk in candidates.chunked(parallel)) {
+                for (page in phaseProfiles.chunked(AUTO_SCAN_PAGE_SIZE)) {
                     if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
-                        (!scanAllAvailable && reserveCount(safeMode) >= target)
+                        (!vipPhase && !scanAllAvailable && reserveCount(safeMode) >= target)
                     ) {
                         keepScanning = false
-                        break@pageLoop
+                        break@phaseLoop
                     }
-                    val testChunk = chunk.filter { markScanned(safeMode, it.id) }
-                    if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
-                    if (testChunk.isEmpty()) continue
-                    testedAnyInCycle = true
-                    val tested = sortCandidatesByScore(
-                        testCandidates(
-                            testChunk,
-                            safeMode,
-                            countProgress,
-                            throttle,
-                            onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
-                        ),
-                        safeMode,
-                    )
-                    if (tested.isEmpty()) continue
 
-                    rememberWorkingResults(safeMode, tested)
-                    working += tested
+                    val dynamicExcluded = excludedIds + currentProfileIds() + reserveProfileIds(safeMode)
+                    val candidates = page.asSequence()
+                        .filter { it.id !in dynamicExcluded }
+                        .filter { profileAllowed(it, safeMode) }
+                        .filterNot { isMarkedFailed(it.id) }
+                        .toList()
+                    if (countProgress) recordAutoSkippedResults(page.size - candidates.size)
 
-                    if (connectFirst && !connected) {
-                        val best = chooseBestCandidate(working, safeMode) ?: tested.first()
-                        switchMutex.withLock {
-                            if (DataStore.autoVpnEnabled && DataStore.autoVpnMode == safeMode) {
-                                connected = switchToVerified(
-                                    initial = best,
-                                    mode = safeMode,
-                                    excludedIds = dynamicExcluded,
-                                    forceTest = true,
-                                    startIfStopped = startIfStopped,
-                                    feedback = feedback,
-                                    recordManualCycle = false,
-                                    switchReason = "reserve-fill",
-                                )
-                            }
+                    for (chunk in candidates.chunked(parallel)) {
+                        if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
+                            (!vipPhase && !scanAllAvailable && reserveCount(safeMode) >= target)
+                        ) {
+                            keepScanning = false
+                            break@phaseLoop
                         }
-                        setAutoStatus(safeMode, R.string.auto_vpn_status_testing_more)
+                        val testChunk = chunk.filter { markScanned(safeMode, it.id) }
+                        if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
+                        if (testChunk.isEmpty()) continue
+                        testedAnyInCycle = true
+                        val tested = sortCandidatesByScore(
+                            testCandidates(
+                                testChunk,
+                                safeMode,
+                                countProgress,
+                                throttle,
+                                onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                            ),
+                            safeMode,
+                        )
+                        if (tested.isEmpty()) continue
+
+                        rememberWorkingResults(safeMode, tested)
+                        working += tested
+
+                        if (connectFirst && !connected) {
+                            val best = chooseBestCandidate(working, safeMode) ?: tested.first()
+                            switchMutex.withLock {
+                                if (DataStore.autoVpnEnabled && DataStore.autoVpnMode == safeMode) {
+                                    connected = switchToVerified(
+                                        initial = best,
+                                        mode = safeMode,
+                                        excludedIds = dynamicExcluded,
+                                        forceTest = true,
+                                        startIfStopped = startIfStopped,
+                                        feedback = feedback,
+                                        recordManualCycle = false,
+                                        switchReason = "reserve-fill",
+                                    )
+                                }
+                            }
+                            setAutoStatus(safeMode, R.string.auto_vpn_status_testing_more)
+                        }
                     }
                 }
             }
 
             if (!keepScanning || (!scanAllAvailable && reserveCount(safeMode) >= target)) break
-            if (!restartAutoScanCycle(safeMode, snapshot.size, testedAnyInCycle)) break
+            if (!restartAutoScanCycle(safeMode, scannedTotal, testedAnyInCycle)) break
         }
 
         return sortCandidatesByScore(working, safeMode)
