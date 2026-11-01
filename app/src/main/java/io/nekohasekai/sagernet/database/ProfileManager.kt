@@ -293,7 +293,7 @@ object ProfileManager {
                 outbound = -1L,
             ),
             RuleEntity(
-                enabled = true,
+                enabled = false,
                 name = "QUIC",
                 port = "443",
                 network = "udp",
@@ -306,7 +306,7 @@ object ProfileManager {
                 outbound = -2L,
             ),
             RuleEntity(
-                enabled = true,
+                enabled = false,
                 name = "Реклама",
                 domains = "category-ads-all",
                 outbound = -2L,

@@ -488,6 +488,11 @@
     <string name="group_source_sync_enabled_sum">Automatically sync subscriptions from the group source</string>
     <string name="group_source_sync_interval_minutes">Group source sync interval (minutes)</string>
     <string name="group_source_sync">Sync group source</string>
+    <string name="initial_group_source_sync_title">Sync subscriptions?</string>
+    <string name="initial_group_source_sync_message">Synchronize the group source now to add the available subscriptions?</string>
+    <string name="initial_group_source_sync_action">Sync now</string>
+    <string name="initial_group_source_sync_later">Later</string>
+    <string name="group_source_sync_in_progress">Synchronizing the group source…</string>
     <string name="group_source_sync_disabled">Group source is empty or disabled; sync is disabled</string>
     <string name="group_source_sync_result">Group source synced: %1$d added, %2$d kept, %3$d removed</string>
     <string name="group_source_sync_error">Group source sync failed: %s</string>
