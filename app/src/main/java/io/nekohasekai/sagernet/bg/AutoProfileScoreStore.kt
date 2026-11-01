@@ -21,6 +21,13 @@ internal object AutoProfileScoreStore {
 
     private data class ProfileKey(val mode: Int, val profileId: Long)
 
+    data class ScanPhases(
+        val vip: List<ProxyEntity>,
+        val regular: List<ProxyEntity>,
+    ) {
+        val totalProfiles: Int get() = vip.size + regular.size
+    }
+
     private data class ProfileScore(
         val score: Int = INITIAL_SCORE,
         val successes: Int = 0,
@@ -110,8 +117,8 @@ internal object AutoProfileScoreStore {
         schedulePersist(immediate = true)
     }
 
-    fun orderForScan(profiles: List<ProxyEntity>, mode: Int): List<ProxyEntity> {
-        if (profiles.size < 2) return profiles
+    fun partitionForScan(profiles: List<ProxyEntity>, mode: Int): ScanPhases {
+        if (profiles.isEmpty()) return ScanPhases(emptyList(), emptyList())
         ensureLoaded()
         val safeMode = sanitizeMode(mode)
         val scores = synchronized(lock) {
@@ -120,21 +127,23 @@ internal object AutoProfileScoreStore {
             }
         }
         val vipCount = profiles.count { scores[it.id]?.vip == true }
-        if (vipCount == 0) return profiles
+        if (vipCount == 0) return ScanPhases(emptyList(), profiles)
 
         DiagnosticLog.event(
             "auto-vpn",
-            "vip-cache-priority mode=$safeMode vip=$vipCount total=${profiles.size} " +
+            "vip-cache-priority mode=$safeMode phase=separate vip=$vipCount total=${profiles.size} " +
                     "threshold=$VIP_ENTER_SCORE minSuccesses=$VIP_MIN_SUCCESSES " +
                     "minStrongSuccesses=$VIP_MIN_STRONG_SUCCESSES",
         )
-        return profiles.withIndex()
+        val vipProfiles = profiles.withIndex()
+            .filter { scores[it.value.id]?.vip == true }
             .sortedWith(
-                compareBy<IndexedValue<ProxyEntity>> { if (scores[it.value.id]?.vip == true) 0 else 1 }
-                    .thenByDescending { if (scores[it.value.id]?.vip == true) scores[it.value.id]?.score ?: 0 else 0 }
+                compareByDescending<IndexedValue<ProxyEntity>> { scores[it.value.id]?.score ?: 0 }
                     .thenBy { it.index },
             )
             .map { it.value }
+        val regularProfiles = profiles.filter { scores[it.id]?.vip != true }
+        return ScanPhases(vipProfiles, regularProfiles)
     }
 
     fun score(profile: ProxyEntity?, mode: Int): Int {
