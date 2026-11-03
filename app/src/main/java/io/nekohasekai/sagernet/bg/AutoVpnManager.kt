@@ -108,6 +108,7 @@ object AutoVpnManager {
     private const val TRAFFIC_CONFIRM_DELAY_MS = 5_000L
     private const val TRAFFIC_DIAGNOSTIC_COOLDOWN_MS = 60_000L
     private const val EXIT_COUNTRY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+    private const val SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
     private const val EXIT_COUNTRY_CONFIRM_DELAY_MS = 30_000L
     private const val DIRECT_NETWORK_RETRY_DELAY_MS = 45_000L
     private const val DIRECT_NETWORK_CHECK_TIMEOUT_MS = 4_000L
@@ -328,6 +329,16 @@ object AutoVpnManager {
     @Volatile
     private var exitIpRefreshJob: Job? = null
     private var directNetworkRetryJob: Job? = null
+    private val serviceAvailabilityLock = Any()
+    private var serviceAvailabilityJob: Job? = null
+    @Volatile
+    private var serviceAvailabilityProfileId = -1L
+    @Volatile
+    private var serviceAvailabilityMode = -1
+    @Volatile
+    private var serviceAvailabilityCheckedAt = 0L
+    @Volatile
+    private var serviceAvailabilityResults = emptyList<ServiceAvailabilityProbe.Result>()
     private var lastTrafficDiagnosticAt = 0L
     private val networkStatusMutex = Mutex()
     @Volatile
@@ -462,6 +473,111 @@ object AutoVpnManager {
         lastExitCountryText()?.let { parts += it }
         parts += networkStatusText()
         return parts.joinToString(" | ")
+    }
+
+    fun serviceAvailabilityText(mode: Int = DataStore.autoVpnMode): String? {
+        if (!DataStore.autoVpnEnabled || mode != DataStore.autoVpnMode) return null
+        val profileId = DataStore.startedProfile
+        if (profileId <= 0L || profileId != serviceAvailabilityProfileId || mode != serviceAvailabilityMode) {
+            return null
+        }
+        val results = serviceAvailabilityResults
+        if (results.isEmpty()) return null
+        return results.joinToString("\n") { result ->
+            val statusRes = when (result.state) {
+                ServiceAvailabilityProbe.State.CHECKING -> R.string.auto_vpn_service_checking
+                ServiceAvailabilityProbe.State.AVAILABLE -> R.string.auto_vpn_service_available
+                ServiceAvailabilityProbe.State.NO_RESPONSE -> R.string.auto_vpn_service_no_response
+                ServiceAvailabilityProbe.State.RESTRICTED -> R.string.auto_vpn_service_restricted
+                ServiceAvailabilityProbe.State.UNKNOWN -> R.string.auto_vpn_service_unknown
+                ServiceAvailabilityProbe.State.NO_TUNNEL_ROUTE -> R.string.auto_vpn_service_no_tunnel_route
+            }
+            app.getString(
+                R.string.auto_vpn_service_status_line,
+                app.getString(result.service.nameRes),
+                app.getString(statusRes),
+            )
+        }
+    }
+
+    private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
+        synchronized(serviceAvailabilityLock) {
+            serviceAvailabilityJob?.cancel()
+            serviceAvailabilityJob = null
+            serviceAvailabilityProfileId = profileId
+            serviceAvailabilityMode = sanitizeMode(mode)
+            serviceAvailabilityCheckedAt = 0L
+            serviceAvailabilityResults = emptyList()
+        }
+    }
+
+    private fun clearServiceAvailability() {
+        synchronized(serviceAvailabilityLock) {
+            serviceAvailabilityJob?.cancel()
+            serviceAvailabilityJob = null
+            serviceAvailabilityProfileId = -1L
+            serviceAvailabilityMode = -1
+            serviceAvailabilityCheckedAt = 0L
+            serviceAvailabilityResults = emptyList()
+        }
+    }
+
+    private fun scheduleServiceAvailabilityCheck(profileId: Long, mode: Int, force: Boolean = false) {
+        val safeMode = sanitizeMode(mode)
+        if (profileId <= 0L || !isSameStartedAutoProfile(profileId, safeMode)) return
+        synchronized(serviceAvailabilityLock) {
+            val sameTarget = serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == safeMode
+            if (sameTarget && serviceAvailabilityJob?.isActive == true) return
+            if (sameTarget && !force &&
+                System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
+            ) return
+
+            serviceAvailabilityProfileId = profileId
+            serviceAvailabilityMode = safeMode
+            serviceAvailabilityCheckedAt = System.currentTimeMillis()
+            serviceAvailabilityResults = ServiceAvailabilityProbe.checkingResults()
+            serviceAvailabilityJob = runOnDefaultDispatcher {
+                val startedAt = System.currentTimeMillis()
+                try {
+                    val results = ServiceAvailabilityProbe.checkAll()
+                    if (!isSameStartedAutoProfile(profileId, safeMode)) return@runOnDefaultDispatcher
+                    val accepted = synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityProfileId != profileId || serviceAvailabilityMode != safeMode) {
+                            false
+                        } else {
+                            serviceAvailabilityResults = results
+                            serviceAvailabilityCheckedAt = System.currentTimeMillis()
+                            serviceAvailabilityJob = null
+                            true
+                        }
+                    }
+                    if (!accepted) return@runOnDefaultDispatcher
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "availability-check-finished profile=$profileId mode=$safeMode elapsedMs=${System.currentTimeMillis() - startedAt} " +
+                                results.joinToString(",") {
+                                    "${it.service.name}:${it.state}:http=${it.responseCode ?: "none"}:${it.elapsedMillis}ms"
+                                },
+                    )
+                    notifyAutoStateChanged()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLog.error("auto-vpn-services", "availability-check-failed profile=$profileId mode=$safeMode", e)
+                    synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == safeMode) {
+                            serviceAvailabilityResults = ServiceAvailabilityProbe.checkingResults().map {
+                                it.copy(state = ServiceAvailabilityProbe.State.UNKNOWN)
+                            }
+                            serviceAvailabilityCheckedAt = System.currentTimeMillis()
+                            serviceAvailabilityJob = null
+                        }
+                    }
+                    notifyAutoStateChanged()
+                }
+            }
+        }
+        notifyAutoStateChanged()
     }
 
     fun networkStatusText(): String = app.getString(networkStatusStringId)
@@ -697,6 +813,7 @@ object AutoVpnManager {
         val modeChanged = !DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode
         if (modeChanged) {
             resetAutoSearchState(cancelScan = true)
+            clearServiceAvailability()
         }
         DataStore.autoVpnMode = safeMode
         DataStore.autoVpnEnabled = true
@@ -1100,6 +1217,7 @@ object AutoVpnManager {
         monitorJob = null
         immediateVerifyJob?.cancel()
         immediateVerifyJob = null
+        clearServiceAvailability()
         autoScanJob?.cancel()
         autoScanJob = null
         stopTrafficMonitoring()
@@ -1207,6 +1325,7 @@ object AutoVpnManager {
         monitorJob = null
         immediateVerifyJob?.cancel()
         immediateVerifyJob = null
+        clearServiceAvailability()
         stopTrafficMonitoring()
         activeUrlTester = null
         activeTrafficSampler = null
@@ -2010,6 +2129,7 @@ object AutoVpnManager {
         immediateVerifyJob?.cancel()
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
+        resetServiceAvailabilityForConnection(profileId, mode)
         val startedAt = System.currentTimeMillis()
         DiagnosticLog.critical(
             "auto-vpn",
@@ -4604,6 +4724,7 @@ object AutoVpnManager {
         val current = SagerDatabase.proxyDao.getById(DataStore.selectedProxy)
         if ((SagerNet.started || DataStore.startedProfile > 0L || DataStore.autoVpnServiceStartRequested) && current != null) {
             setAutoStatus(safeMode, R.string.auto_vpn_status_ready, current.displayName())
+            scheduleServiceAvailabilityCheck(DataStore.startedProfile, safeMode)
         } else {
             setAutoStatus(null)
         }

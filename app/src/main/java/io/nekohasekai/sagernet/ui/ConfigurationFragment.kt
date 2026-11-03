@@ -2718,6 +2718,7 @@ class ConfigurationFragment @JvmOverloads constructor(
             val profileType: TextView = view.findViewById(R.id.profile_type)
             val profileAddress: TextView = view.findViewById(R.id.profile_address)
             val profileStatus: TextView = view.findViewById(R.id.profile_status)
+            val profileServiceStatus: TextView = view.findViewById(R.id.profile_service_status)
 
             val trafficText: TextView = view.findViewById(R.id.traffic_text)
             val selectedView: LinearLayout = view.findViewById(R.id.selected_view)
@@ -2736,6 +2737,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                 val parent = parent ?: return
 
                 entity = proxyEntity
+                profileServiceStatus.isGone = true
 
                 if (AutoVpnManager.isAutoProfileId(proxyEntity.id)) {
                     bindAutoProfile(proxyEntity)
@@ -3050,6 +3052,7 @@ class ConfigurationFragment @JvmOverloads constructor(
 
             private fun bindAutoProfile(proxyEntity: ProxyListItem) {
                 val mode = AutoVpnManager.modeForProfileId(proxyEntity.id)
+                profileServiceStatus.isGone = true
                 view.setOnClickListener {
                     AutoVpnManager.selectMode(mode)
                     adapter.reloadProfiles(forceScrollTop = true)
@@ -3073,6 +3076,9 @@ class ConfigurationFragment @JvmOverloads constructor(
                 if (DataStore.autoVpnMode == mode) {
                     if (DataStore.autoVpnEnabled) {
                         profileStatus.text = AutoVpnManager.cardStatusText(mode)
+                        val serviceText = AutoVpnManager.serviceAvailabilityText(mode)
+                        profileServiceStatus.text = serviceText.orEmpty()
+                        profileServiceStatus.isVisible = !serviceText.isNullOrBlank()
                         profileStatus.setTextColor(
                             requireContext().getColour(
                                 if (AutoVpnManager.hasLastPingError()) {
