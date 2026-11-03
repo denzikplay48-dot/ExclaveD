@@ -783,6 +783,7 @@ class MainActivity : ThemedActivity(),
         scheduleInitialGroupSourceSyncPrompt()
         scheduleReleaseUpdateCheck()
         AutoVpnManager.refreshNetworkStatus("main-activity-resume")
+        AutoVpnManager.refreshServiceAvailabilityOnAppResume()
     }
 
     private fun scheduleInitialGroupSourceSyncPrompt() {

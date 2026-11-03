@@ -46,6 +46,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
@@ -101,6 +102,7 @@ object AutoVpnManager {
     private const val TRAFFIC_DIAGNOSTIC_COOLDOWN_MS = 60_000L
     private const val EXIT_COUNTRY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
     private const val SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+    private const val GOOGLE_AVAILABILITY_CONFIRM_DELAY_MS = 5_000L
     private const val EXIT_COUNTRY_CONFIRM_DELAY_MS = 30_000L
     private const val SCORE_NETWORK_STATUS_CACHE_MS = 15_000L
     private const val MAX_GEMINI_REJECTED_KEYS = 5000
@@ -292,6 +294,7 @@ object AutoVpnManager {
     private var exitIpRefreshJob: Job? = null
     private val serviceAvailabilityLock = Any()
     private var serviceAvailabilityJob: Job? = null
+    private var googleAvailabilityConfirmationJob: Job? = null
     @Volatile
     private var serviceAvailabilityProfileId = -1L
     @Volatile
@@ -419,7 +422,6 @@ object AutoVpnManager {
         lastPingText()?.let { parts += it }
         candidateCountText(mode)?.let { parts += it }
         lastExitCountryText()?.let { parts += it }
-        parts += networkStatusText()
         return parts.joinToString(" | ")
     }
 
@@ -431,10 +433,11 @@ object AutoVpnManager {
         }
         val results = serviceAvailabilityResults
         if (results.isEmpty()) return null
-        return results.joinToString("\n") { result ->
+        val serviceLines = results.joinToString("\n") { result ->
             val statusRes = when (result.state) {
                 ServiceAvailabilityProbe.State.CHECKING -> R.string.auto_vpn_service_checking
                 ServiceAvailabilityProbe.State.AVAILABLE -> R.string.auto_vpn_service_available
+                ServiceAvailabilityProbe.State.UNAVAILABLE -> R.string.auto_vpn_service_unavailable
                 ServiceAvailabilityProbe.State.NO_RESPONSE -> R.string.auto_vpn_service_no_response
                 ServiceAvailabilityProbe.State.RESTRICTED -> R.string.auto_vpn_service_restricted
                 ServiceAvailabilityProbe.State.UNKNOWN -> R.string.auto_vpn_service_unknown
@@ -446,12 +449,15 @@ object AutoVpnManager {
                 app.getString(statusRes),
             )
         }
+        return "${networkStatusText()}\n$serviceLines"
     }
 
     private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
+            googleAvailabilityConfirmationJob?.cancel()
+            googleAvailabilityConfirmationJob = null
             serviceAvailabilityProfileId = profileId
             serviceAvailabilityMode = sanitizeMode(mode)
             serviceAvailabilityCheckedAt = 0L
@@ -463,6 +469,8 @@ object AutoVpnManager {
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
+            googleAvailabilityConfirmationJob?.cancel()
+            googleAvailabilityConfirmationJob = null
             serviceAvailabilityProfileId = -1L
             serviceAvailabilityMode = -1
             serviceAvailabilityCheckedAt = 0L
@@ -480,6 +488,8 @@ object AutoVpnManager {
                 System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
             ) return
 
+            googleAvailabilityConfirmationJob?.cancel()
+            googleAvailabilityConfirmationJob = null
             serviceAvailabilityProfileId = profileId
             serviceAvailabilityMode = safeMode
             serviceAvailabilityCheckedAt = System.currentTimeMillis()
@@ -508,6 +518,12 @@ object AutoVpnManager {
                                 },
                     )
                     notifyAutoStateChanged()
+                    results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GOOGLE }
+                        ?.takeIf {
+                            it.state == ServiceAvailabilityProbe.State.UNAVAILABLE ||
+                                    it.state == ServiceAvailabilityProbe.State.NO_RESPONSE
+                        }
+                        ?.let { scheduleGoogleAvailabilityConfirmation(profileId, safeMode, it) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -529,6 +545,77 @@ object AutoVpnManager {
     }
 
     fun networkStatusText(): String = app.getString(networkStatusStringId)
+
+    fun refreshServiceAvailabilityOnAppResume() {
+        val profileId = DataStore.startedProfile
+        val mode = sanitizeMode(DataStore.autoVpnMode)
+        if (!DataStore.autoVpnEnabled || !SagerNet.started || profileId <= 0L) return
+        if (immediateVerifyJob?.isActive == true) return
+        val hasInitialCheck = synchronized(serviceAvailabilityLock) {
+            serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == mode &&
+                    serviceAvailabilityResults.isNotEmpty()
+        }
+        if (hasInitialCheck) scheduleServiceAvailabilityCheck(profileId, mode, force = true)
+    }
+
+    private fun scheduleGoogleAvailabilityConfirmation(
+        profileId: Long,
+        mode: Int,
+        first: ServiceAvailabilityProbe.Result,
+    ) {
+        synchronized(serviceAvailabilityLock) {
+            if (googleAvailabilityConfirmationJob?.isActive == true) return
+            googleAvailabilityConfirmationJob = runOnDefaultDispatcher {
+                try {
+                    delay(GOOGLE_AVAILABILITY_CONFIRM_DELAY_MS)
+                    if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
+                    val second = ServiceAvailabilityProbe.checkGoogle()
+                    if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
+                    val accepted = synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityProfileId != profileId || serviceAvailabilityMode != mode) {
+                            false
+                        } else {
+                            serviceAvailabilityResults = serviceAvailabilityResults.map {
+                                if (it.service == ServiceAvailabilityProbe.Service.GOOGLE) second else it
+                            }
+                            serviceAvailabilityCheckedAt = System.currentTimeMillis()
+                            true
+                        }
+                    }
+                    if (!accepted) return@runOnDefaultDispatcher
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "google-confirmation profile=$profileId mode=$mode " +
+                                "first=${first.state}:http=${first.responseCode ?: "none"} " +
+                                "second=${second.state}:http=${second.responseCode ?: "none"}",
+                    )
+                    notifyAutoStateChanged()
+                    if (second.state == ServiceAvailabilityProbe.State.UNAVAILABLE ||
+                        second.state == ServiceAvailabilityProbe.State.NO_RESPONSE
+                    ) {
+                        if (!hasDirectInternet()) {
+                            synchronized(serviceAvailabilityLock) { googleAvailabilityConfirmationJob = null }
+                            deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                        } else {
+                            synchronized(serviceAvailabilityLock) { googleAvailabilityConfirmationJob = null }
+                            confirmActiveProfileFailure(profileId, mode, "google-unavailable")
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLog.error("auto-vpn-services", "google-confirmation-failed profile=$profileId mode=$mode", e)
+                } finally {
+                    val currentJob = currentCoroutineContext()[Job]
+                    synchronized(serviceAvailabilityLock) {
+                        if (googleAvailabilityConfirmationJob === currentJob) {
+                            googleAvailabilityConfirmationJob = null
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fun refreshNetworkStatus(trigger: String) {
         networkStatusStringId = R.string.auto_vpn_network_checking
@@ -1933,7 +2020,6 @@ object AutoVpnManager {
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
         resetServiceAvailabilityForConnection(profileId, mode)
-        scheduleServiceAvailabilityCheck(profileId, mode, force = true)
         val startedAt = System.currentTimeMillis()
         DiagnosticLog.critical(
             "auto-vpn",
@@ -2154,14 +2240,21 @@ object AutoVpnManager {
         source: String,
     ): ActiveVpnTrafficProbe.Result? {
         if (!isSameStartedAutoProfile(profileId, mode)) return null
-        val first = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL)
+        val proxy = ServiceAvailabilityProbe.activeProfileProxy() ?: run {
+            DiagnosticLog.warn(
+                "auto-vpn",
+                "active-traffic-probe-no-tunnel-route profile=$profileId mode=$mode source=$source",
+            )
+            return null
+        }
+        val first = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL, proxy)
         val firstSlow = recordTrafficSpeedSample(profileId, first)
         logActiveTrafficProbe(profileId, mode, source, 1, first, firstSlow)
         if (first.hasTraffic && first.download.complete && !firstSlow) return first
 
         delay(TRAFFIC_CONFIRM_DELAY_MS)
         if (!isSameStartedAutoProfile(profileId, mode)) return first.takeIf { it.hasTraffic }
-        val second = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL)
+        val second = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL, proxy)
         val secondSlow = recordTrafficSpeedSample(profileId, second)
         logActiveTrafficProbe(profileId, mode, source, 2, second, secondSlow)
         return when {
@@ -2365,27 +2458,25 @@ object AutoVpnManager {
         profile: ProxyEntity,
         mode: Int,
     ): ExitIpGeoChecker.GeoInfo? {
-        val instance = V2RayTestInstance(
-            profile,
-            ExitIpGeoChecker.GEOIP_URL,
-            DataStore.connectionTestTimeoutSeconds.coerceAtLeast(1) * 1000,
-            protectPath = protectPathForTests(),
-            enableHttpProxy = true,
-        )
+        val proxy = ServiceAvailabilityProbe.activeProfileProxy()
+        if (proxy == null) {
+            DiagnosticLog.warn(
+                "auto-vpn",
+                "active-exit-geoip-no-tunnel-route mode=$mode profile=${profile.id}",
+            )
+            return null
+        }
         return try {
-            instance.startForExitIpCheck()
-            instance.exitIpGeoInfo()
+            ExitIpGeoChecker.geoInfo(proxy)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             DiagnosticLog.warn(
                 "auto-vpn",
-                "profile-exit-geoip-failed mode=$mode profile=${profile.id}",
+                "active-exit-geoip-failed mode=$mode profile=${profile.id}",
                 e,
             )
             null
-        } finally {
-            instance.close()
         }
     }
 

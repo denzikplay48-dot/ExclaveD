@@ -369,9 +369,11 @@
     <string name="auto_vpn_service_telegram">Telegram Web</string>
     <string name="auto_vpn_service_youtube">YouTube site</string>
     <string name="auto_vpn_service_instagram">Instagram site</string>
+    <string name="auto_vpn_service_google">Google</string>
     <string name="auto_vpn_service_status_line">%1$s: %2$s</string>
     <string name="auto_vpn_service_checking">checking...</string>
     <string name="auto_vpn_service_available">site reachable</string>
+    <string name="auto_vpn_service_unavailable">site unavailable</string>
     <string name="auto_vpn_service_no_response">no response</string>
     <string name="auto_vpn_service_restricted">regional restriction detected</string>
     <string name="auto_vpn_service_unknown">inconclusive response</string>
