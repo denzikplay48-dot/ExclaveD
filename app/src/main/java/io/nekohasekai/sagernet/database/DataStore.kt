@@ -28,6 +28,7 @@ import androidx.preference.PreferenceDataStore
 import io.nekohasekai.sagernet.*
 import io.nekohasekai.sagernet.bg.AutoVpnManager
 import io.nekohasekai.sagernet.bg.GroupSourceSyncer
+import io.nekohasekai.sagernet.bg.ReleaseUpdateNotifier
 import io.nekohasekai.sagernet.bg.SubscriptionUpdater
 import io.nekohasekai.sagernet.SagerNet.Companion.application
 import io.nekohasekai.sagernet.bg.VpnService
@@ -700,6 +701,11 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             Key.GROUP_SOURCE_VPN_RETRY_COUNT -> {
                 runOnDefaultDispatcher {
                     GroupSourceSyncer.reconfigureVpnSyncForState()
+                }
+            }
+            Key.CHECK_RELEASE_UPDATES, Key.CHECK_PRERELEASE_UPDATES -> {
+                runOnDefaultDispatcher {
+                    ReleaseUpdateNotifier.reconfigure()
                 }
             }
             Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED -> {

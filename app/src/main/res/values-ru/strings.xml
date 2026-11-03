@@ -27,6 +27,9 @@
     <string name="app_update_install_permission_denied">Разрешите ExclaveD устанавливать приложения, чтобы продолжить.</string>
     <string name="app_update_install">Установить обновление</string>
     <string name="app_update_install_failed">Не удалось запустить системный установщик APK.</string>
+    <string name="app_update_notification_channel">Обновления приложения</string>
+    <string name="app_update_notification_title">Доступно обновление %1$s</string>
+    <string name="app_update_notification_text">Версия %1$s (%2$s) доступна. Нажмите, чтобы открыть приложение.</string>
     <string name="header_type">Обфускация заголовка</string>
     <string name="network">Сеть</string>
     <string name="security">Шифрование транспортного уровня</string>
@@ -821,5 +824,17 @@
     <string name="auto_vpn_network_whitelist">Режим белого списка</string>
     <string name="auto_vpn_network_unavailable">Сеть не доступна</string>
     <string name="auto_vpn_network_partial">Частичный доступ</string>
+    <string name="auto_vpn_service_chatgpt">ChatGPT</string>
+    <string name="auto_vpn_service_gemini">Gemini</string>
+    <string name="auto_vpn_service_telegram">Telegram (веб)</string>
+    <string name="auto_vpn_service_youtube">YouTube (сайт)</string>
+    <string name="auto_vpn_service_instagram">Instagram (сайт)</string>
+    <string name="auto_vpn_service_status_line">%1$s: %2$s</string>
+    <string name="auto_vpn_service_checking">проверка...</string>
+    <string name="auto_vpn_service_available">сайт доступен</string>
+    <string name="auto_vpn_service_no_response">нет ответа</string>
+    <string name="auto_vpn_service_restricted">обнаружено региональное ограничение</string>
+    <string name="auto_vpn_service_unknown">неясный ответ</string>
+    <string name="auto_vpn_service_no_tunnel_route">нельзя проверить через VPN</string>
     <string name="no_subscription_links">&#1057;&#1089;&#1099;&#1083;&#1082;&#1080; &#1087;&#1086;&#1076;&#1087;&#1080;&#1089;&#1086;&#1082; &#1085;&#1077; &#1085;&#1072;&#1081;&#1076;&#1077;&#1085;&#1099;</string>
 </resources>
