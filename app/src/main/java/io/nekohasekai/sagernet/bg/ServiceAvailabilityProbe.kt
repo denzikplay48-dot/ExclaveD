@@ -31,6 +31,7 @@ internal object ServiceAvailabilityProbe {
     private const val RETRY_DELAY_MS = 1_000L
 
     enum class State {
+        NOT_CHECKED,
         CHECKING,
         AVAILABLE,
         UNAVAILABLE,
@@ -58,6 +59,10 @@ internal object ServiceAvailabilityProbe {
 
     fun checkingResults(): List<Result> = Service.values().map {
         Result(it, State.CHECKING, null, 0L)
+    }
+
+    fun notCheckedResults(): List<Result> = Service.values().map {
+        Result(it, State.NOT_CHECKED, null, 0L)
     }
 
     suspend fun checkAll(): List<Result> = coroutineScope {

@@ -831,6 +831,7 @@
     <string name="auto_vpn_service_instagram">Instagram (сайт)</string>
     <string name="auto_vpn_service_google">Google</string>
     <string name="auto_vpn_service_status_line">%1$s: %2$s</string>
+    <string name="auto_vpn_service_not_checked">не проверен</string>
     <string name="auto_vpn_service_checking">проверка...</string>
     <string name="auto_vpn_service_available">сайт доступен</string>
     <string name="auto_vpn_service_unavailable">сайт недоступен</string>

@@ -426,15 +426,19 @@ object AutoVpnManager {
     }
 
     fun serviceAvailabilityText(mode: Int = DataStore.autoVpnMode): String? {
-        if (!DataStore.autoVpnEnabled || mode != DataStore.autoVpnMode) return null
+        if (mode != DataStore.autoVpnMode) return null
         val profileId = DataStore.startedProfile
-        if (profileId <= 0L || profileId != serviceAvailabilityProfileId || mode != serviceAvailabilityMode) {
-            return null
+        val results = if (DataStore.autoVpnEnabled && SagerNet.started && profileId > 0L &&
+            profileId == serviceAvailabilityProfileId && mode == serviceAvailabilityMode &&
+            serviceAvailabilityResults.isNotEmpty()
+        ) {
+            serviceAvailabilityResults
+        } else {
+            ServiceAvailabilityProbe.notCheckedResults()
         }
-        val results = serviceAvailabilityResults
-        if (results.isEmpty()) return null
         val serviceLines = results.joinToString("\n") { result ->
             val statusRes = when (result.state) {
+                ServiceAvailabilityProbe.State.NOT_CHECKED -> R.string.auto_vpn_service_not_checked
                 ServiceAvailabilityProbe.State.CHECKING -> R.string.auto_vpn_service_checking
                 ServiceAvailabilityProbe.State.AVAILABLE -> R.string.auto_vpn_service_available
                 ServiceAvailabilityProbe.State.UNAVAILABLE -> R.string.auto_vpn_service_unavailable

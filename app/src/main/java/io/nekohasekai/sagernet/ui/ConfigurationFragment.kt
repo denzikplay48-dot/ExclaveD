@@ -3074,9 +3074,6 @@ class ConfigurationFragment @JvmOverloads constructor(
                 if (DataStore.autoVpnMode == mode) {
                     if (DataStore.autoVpnEnabled) {
                         profileStatus.text = AutoVpnManager.cardStatusText(mode)
-                        val serviceText = AutoVpnManager.serviceAvailabilityText(mode)
-                        profileServiceStatus.text = serviceText.orEmpty()
-                        profileServiceStatus.isVisible = !serviceText.isNullOrBlank()
                         profileStatus.setTextColor(
                             requireContext().getColour(
                                 if (AutoVpnManager.hasLastPingError()) {
@@ -3087,9 +3084,12 @@ class ConfigurationFragment @JvmOverloads constructor(
                             )
                         )
                     } else {
-                        profileStatus.text = AutoVpnManager.networkStatusText()
+                        profileStatus.text = ""
                         profileStatus.setTextColor(Color.GRAY)
                     }
+                    val serviceText = AutoVpnManager.serviceAvailabilityText(mode)
+                    profileServiceStatus.text = serviceText.orEmpty()
+                    profileServiceStatus.isVisible = !serviceText.isNullOrBlank()
                     selectedView.visibility = if (DataStore.autoVpnEnabled) View.VISIBLE else View.INVISIBLE
                 } else {
                     profileStatus.text = ""
