@@ -3,6 +3,7 @@ package io.nekohasekai.sagernet.bg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 
 internal object ActiveVpnTrafficProbe {
@@ -46,7 +47,7 @@ internal object ActiveVpnTrafficProbe {
                 ?: download.firstByteMillis
     }
 
-    suspend fun run(connectionTestUrl: String): Result = withContext(Dispatchers.IO) {
+    suspend fun run(connectionTestUrl: String, proxy: Proxy): Result = withContext(Dispatchers.IO) {
         val urls = linkedMapOf<String, String>()
         listOf(connectionTestUrl, CLOUDFLARE_204_URL).forEach { value ->
             runCatching { URL(value.trim()) }.getOrNull()?.let { url ->
@@ -55,17 +56,17 @@ internal object ActiveVpnTrafficProbe {
             }
         }
         Result(
-            endpoints = urls.values.map(::checkEndpoint),
-            download = checkDownload(),
+            endpoints = urls.values.map { checkEndpoint(it, proxy) },
+            download = checkDownload(proxy),
         )
     }
 
-    private fun checkEndpoint(value: String): EndpointResult {
+    private fun checkEndpoint(value: String, proxy: Proxy): EndpointResult {
         val url = URL(value)
         val start = System.nanoTime()
         var connection: HttpURLConnection? = null
         return try {
-            connection = url.openConnection() as? HttpURLConnection
+            connection = url.openConnection(proxy) as? HttpURLConnection
                 ?: return EndpointResult(url.host, null, 0, false, "unsupported-connection")
             connection.instanceFollowRedirects = true
             connection.connectTimeout = CONNECT_TIMEOUT_MS
@@ -91,7 +92,7 @@ internal object ActiveVpnTrafficProbe {
         }
     }
 
-    private fun checkDownload(): DownloadResult {
+    private fun checkDownload(proxy: Proxy): DownloadResult {
         val expected = DOWNLOAD_BYTES.toLong()
         val url = URL("$CLOUDFLARE_DOWNLOAD_URL?bytes=$DOWNLOAD_BYTES&probe=${System.nanoTime()}")
         val start = System.nanoTime()
@@ -99,7 +100,7 @@ internal object ActiveVpnTrafficProbe {
         var downloaded = 0L
         var connection: HttpURLConnection? = null
         return try {
-            connection = url.openConnection() as? HttpURLConnection
+            connection = url.openConnection(proxy) as? HttpURLConnection
                 ?: return DownloadResult(0L, expected, 0L, null, null, false, "unsupported-connection")
             connection.instanceFollowRedirects = true
             connection.connectTimeout = CONNECT_TIMEOUT_MS

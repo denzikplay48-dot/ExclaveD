@@ -33,6 +33,7 @@ internal object ServiceAvailabilityProbe {
     enum class State {
         CHECKING,
         AVAILABLE,
+        UNAVAILABLE,
         NO_RESPONSE,
         RESTRICTED,
         UNKNOWN,
@@ -45,6 +46,7 @@ internal object ServiceAvailabilityProbe {
         TELEGRAM(R.string.auto_vpn_service_telegram, "https://web.telegram.org/"),
         YOUTUBE(R.string.auto_vpn_service_youtube, "https://www.youtube.com/generate_204"),
         INSTAGRAM(R.string.auto_vpn_service_instagram, "https://www.instagram.com/"),
+        GOOGLE(R.string.auto_vpn_service_google, "https://www.google.com/generate_204"),
     }
 
     data class Result(
@@ -59,7 +61,7 @@ internal object ServiceAvailabilityProbe {
     }
 
     suspend fun checkAll(): List<Result> = coroutineScope {
-        val proxy = activeTunnelProxy()
+        val proxy = activeProfileProxy()
             ?: return@coroutineScope Service.values().map { Result(it, State.NO_TUNNEL_ROUTE, null, 0L) }
         val semaphore = Semaphore(3)
         Service.values().map { service ->
@@ -79,7 +81,7 @@ internal object ServiceAvailabilityProbe {
         }.awaitAll()
     }
 
-    private fun activeTunnelProxy(): Proxy? {
+    internal fun activeProfileProxy(): Proxy? {
         if (DataStore.serviceMode != Key.MODE_VPN) return null
         if (DataStore.requireSocks) {
             if (DataStore.socksUsername.isNotEmpty() || DataStore.socksPassword.isNotEmpty()) return null
@@ -93,6 +95,12 @@ internal object ServiceAvailabilityProbe {
         } else {
             null
         }
+    }
+
+    suspend fun checkGoogle(): Result {
+        val proxy = activeProfileProxy()
+            ?: return Result(Service.GOOGLE, State.NO_TUNNEL_ROUTE, null, 0L)
+        return checkOnce(Service.GOOGLE, proxy)
     }
 
     private suspend fun checkOnce(service: Service, proxy: Proxy): Result = withContext(Dispatchers.IO) {
@@ -115,6 +123,8 @@ internal object ServiceAvailabilityProbe {
                 Result(service, State.RESTRICTED, code, elapsed)
             } else {
                 val state = when {
+                    service == Service.GOOGLE && code == HttpURLConnection.HTTP_NO_CONTENT -> State.AVAILABLE
+                    service == Service.GOOGLE -> State.UNAVAILABLE
                     code in 200..399 -> State.AVAILABLE
                     else -> State.UNKNOWN
                 }
