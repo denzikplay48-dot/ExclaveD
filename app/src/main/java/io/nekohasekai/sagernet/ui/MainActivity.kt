@@ -62,6 +62,7 @@ import io.nekohasekai.sagernet.bg.BaseService
 import io.nekohasekai.sagernet.bg.AutoVpnManager
 import io.nekohasekai.sagernet.bg.GroupSourceSyncer
 import io.nekohasekai.sagernet.bg.ProfileTestRunner
+import io.nekohasekai.sagernet.bg.ReleaseUpdateNotifier
 import io.nekohasekai.sagernet.bg.SagerConnection
 import io.nekohasekai.sagernet.database.*
 import io.nekohasekai.sagernet.database.preference.OnPreferenceDataStoreChangeListener
@@ -208,21 +209,40 @@ class MainActivity : ThemedActivity(),
                 connect.launch(null)
             }
         }
+        binding.fab.setOnFocusChangeListener { view, hasFocus ->
+            binding.fabFocusRing.visibility = if (hasFocus) View.VISIBLE else View.GONE
+            val scale = if (hasFocus) 1.12f else 1f
+            view.animate()
+                .scaleX(scale)
+                .scaleY(scale)
+                .setDuration(120L)
+                .start()
+        }
         binding.stats.setOnClickListener { if (state == BaseService.State.Connected) binding.stats.testConnection() }
 
         setContentView(binding.root)
 
         changeState(BaseService.State.Idle)
+        if (SagerNet.isTv) binding.fab.post { binding.fab.requestFocus() }
         connection.connect(this, this)
         DataStore.configurationStore.registerChangeListener(this)
 
-        if (intent?.action == Intent.ACTION_VIEW) {
-            onNewIntent(intent)
+        intent?.let { launchIntent ->
+            if (launchIntent.action == Intent.ACTION_VIEW ||
+                launchIntent.action == ReleaseUpdateNotifier.ACTION_OPEN_UPDATE
+            ) {
+                onNewIntent(launchIntent)
+            }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+
+        if (intent.action == ReleaseUpdateNotifier.ACTION_OPEN_UPDATE) {
+            scheduleReleaseUpdateCheck(force = true)
+            return
+        }
 
         val uri = intent.data ?: return
 
@@ -926,12 +946,17 @@ class MainActivity : ThemedActivity(),
         }
     }
 
-    private fun scheduleReleaseUpdateCheck() {
+    private fun scheduleReleaseUpdateCheck(force: Boolean = false) {
+        if (force) releaseUpdateCheckScheduled = false
         if (releaseUpdateCheckScheduled || initialGroupSourceSyncPromptPending) return
         releaseUpdateCheckScheduled = true
         lifecycleScope.launch {
             delay(1200)
             if (isFinishing || isDestroyed) return@launch
+            if (initialGroupSourceSyncPromptPending) {
+                releaseUpdateCheckScheduled = false
+                return@launch
+            }
             runReleaseUpdateCheck(manual = false)
         }
     }

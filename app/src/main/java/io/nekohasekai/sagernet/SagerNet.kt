@@ -46,6 +46,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import go.Seq
 import io.nekohasekai.sagernet.bg.GroupSourceSyncer
+import io.nekohasekai.sagernet.bg.ReleaseUpdateNotifier
 import io.nekohasekai.sagernet.bg.RouteAssetUpdater
 import io.nekohasekai.sagernet.bg.SagerConnection
 import io.nekohasekai.sagernet.bg.SubscriptionUpdater
@@ -122,6 +123,9 @@ class SagerNet : Application(),
             }
             runCatching {
                 GroupSourceSyncer.reconfigureSync()
+            }
+            runCatching {
+                ReleaseUpdateNotifier.reconfigure()
             }
         }
 
@@ -287,7 +291,11 @@ class SagerNet : Application(),
                         ).apply {
                             setSound(null, null)
                             enableVibration(false)
-                        }
+                        }, NotificationChannel(
+                            ReleaseUpdateNotifier.CHANNEL_ID,
+                            application.getText(R.string.app_update_notification_channel),
+                            NotificationManager.IMPORTANCE_DEFAULT
+                        )
                     )
                 )
             }

@@ -449,9 +449,22 @@ class ConfigurationFragment @JvmOverloads constructor(
     }
 
     override fun onKeyDown(ketCode: Int, event: KeyEvent): Boolean {
-        val fragment = (childFragmentManager.findFragmentByTag("f" + selectedGroup.id) as GroupFragment?)
-        fragment?.configurationListView?.apply {
-            if (!hasFocus()) requestFocus()
+        val dpadNavigationKey = when (ketCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_BUTTON_A -> true
+            else -> false
+        }
+        if (!SagerNet.isTv || !dpadNavigationKey) {
+            val fragment = (childFragmentManager.findFragmentByTag("f" + selectedGroup.id) as GroupFragment?)
+            fragment?.configurationListView?.apply {
+                if (!hasFocus()) requestFocus()
+            }
         }
         return super.onKeyDown(ketCode, event)
     }

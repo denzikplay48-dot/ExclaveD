@@ -28,6 +28,9 @@
     <string name="app_update_install_permission_denied">Allow ExclaveD to install apps to continue.</string>
     <string name="app_update_install">Install update</string>
     <string name="app_update_install_failed">Could not start the Android package installer.</string>
+    <string name="app_update_notification_channel">App updates</string>
+    <string name="app_update_notification_title">%1$s update available</string>
+    <string name="app_update_notification_text">Version %1$s (%2$s) is available. Tap to open the app.</string>
     <string name="lite_choose_mode">Auto mode</string>
     <string name="lite_mode_no_ru">No RU</string>
     <string name="lite_mode_gemini">Gemini</string>

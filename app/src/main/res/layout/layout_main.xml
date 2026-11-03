@@ -37,11 +37,26 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:elevation="6dp"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
             android:nextFocusDown="@+id/stats"
             app:backgroundTint="?fabColorBackground"
             app:layout_anchor="@id/stats"
             app:pressedTranslationZ="6dp"
             app:srcCompat="@drawable/ic_service_idle" />
+
+        <View
+            android:id="@+id/fab_focus_ring"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/fab_focus_ring"
+            android:clickable="false"
+            android:elevation="7dp"
+            android:focusable="false"
+            android:importantForAccessibility="no"
+            android:visibility="gone"
+            app:layout_anchor="@id/fab"
+            app:layout_anchorGravity="center" />
 
         <io.nekohasekai.sagernet.widget.StatsBar
             android:id="@+id/stats"
