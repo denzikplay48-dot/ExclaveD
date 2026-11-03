@@ -385,6 +385,7 @@
     <string name="auto_vpn_service_instagram">Instagram site</string>
     <string name="auto_vpn_service_google">Google</string>
     <string name="auto_vpn_service_status_line">%1$s: %2$s</string>
+    <string name="auto_vpn_service_not_checked">not checked</string>
     <string name="auto_vpn_service_checking">checking...</string>
     <string name="auto_vpn_service_available">site reachable</string>
     <string name="auto_vpn_service_unavailable">site unavailable</string>
