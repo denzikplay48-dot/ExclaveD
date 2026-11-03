@@ -2130,6 +2130,7 @@ object AutoVpnManager {
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
         resetServiceAvailabilityForConnection(profileId, mode)
+        scheduleServiceAvailabilityCheck(profileId, mode, force = true)
         val startedAt = System.currentTimeMillis()
         DiagnosticLog.critical(
             "auto-vpn",
