@@ -73,21 +73,22 @@ internal object ServiceAvailabilityProbe {
     }
 
     suspend fun checkAll(renderGeminiPage: Boolean = false): List<Result> = coroutineScope {
+        val renderedGeminiRouteAvailable = renderGeminiPage && supportsRenderedGeminiRoute()
         val proxy = activeProfileProxy()
-            ?: run {
-                if (renderGeminiPage) {
-                    DiagnosticLog.event(
-                        "auto-vpn-services",
-                        "gemini-probe-select path=none renderRequested=true reason=${renderedGeminiRouteUnavailableReason() ?: "no-active-vpn-route"}",
-                    )
-                }
-                return@coroutineScope Service.values().map { Result(it, State.NO_TUNNEL_ROUTE, null, 0L) }
+        if (proxy == null && !renderedGeminiRouteAvailable) {
+            if (renderGeminiPage) {
+                DiagnosticLog.event(
+                    "auto-vpn-services",
+                    "gemini-probe-select path=none renderRequested=true reason=${renderedGeminiRouteUnavailableReason() ?: "no-active-vpn-route"}",
+                )
             }
+            return@coroutineScope Service.values().map { Result(it, State.NO_TUNNEL_ROUTE, null, 0L) }
+        }
         val semaphore = Semaphore(3)
         Service.values().map { service ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
-                    val useRenderedGemini = service == Service.GEMINI && renderGeminiPage && supportsRenderedGeminiRoute()
+                    val useRenderedGemini = service == Service.GEMINI && renderedGeminiRouteAvailable
                     val first = if (useRenderedGemini) {
                         checkGemini(renderPage = true)
                     } else {
@@ -102,12 +103,17 @@ internal object ServiceAvailabilityProbe {
                                 "gemini-probe-select path=http renderRequested=$renderGeminiPage reason=$reason",
                             )
                         }
-                        checkOnce(service, proxy)
+                        if (proxy == null) {
+                            Result(service, State.NO_TUNNEL_ROUTE, null, 0L)
+                        } else {
+                            checkOnce(service, proxy)
+                        }
                     }
                     if (useRenderedGemini) {
                         return@withPermit first
                     }
                     if (first.state != State.NO_RESPONSE) return@withPermit first
+                    if (proxy == null) return@withPermit first
                     delay(RETRY_DELAY_MS)
                     val second = checkOnce(service, proxy)
                     if (second.state == State.NO_RESPONSE) {
@@ -157,6 +163,13 @@ internal object ServiceAvailabilityProbe {
     }
 
     suspend fun checkGemini(renderPage: Boolean = false): Result {
+        if (renderPage && supportsRenderedGeminiRoute()) {
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "gemini-probe-select path=rendered-webview renderRequested=true reason=active-system-vpn-route",
+            )
+            return GeminiRenderedPageProbe.check()
+        }
         val proxy = activeProfileProxy()
             ?: run {
                 DiagnosticLog.event(
@@ -165,13 +178,6 @@ internal object ServiceAvailabilityProbe {
                 )
                 return Result(Service.GEMINI, State.NO_TUNNEL_ROUTE, null, 0L)
             }
-        if (renderPage && supportsRenderedGeminiRoute()) {
-            DiagnosticLog.event(
-                "auto-vpn-services",
-                "gemini-probe-select path=rendered-webview renderRequested=true reason=route-supported",
-            )
-            return GeminiRenderedPageProbe.check()
-        }
         val reason = if (!renderPage) "render-not-requested" else renderedGeminiRouteUnavailableReason()
             ?: "rendered-probe-disabled"
         DiagnosticLog.event(
@@ -185,7 +191,6 @@ internal object ServiceAvailabilityProbe {
 
     private fun renderedGeminiRouteUnavailableReason(): String? {
         if (DataStore.serviceMode != Key.MODE_VPN) return "service-mode-not-vpn"
-        if (DataStore.requireSocks) return "socks-mode-enabled"
         if (DataStore.tunImplementation != TunImplementation.SYSTEM) return "system-tun-not-active"
         val selfExcludedFromAppVpn = DataStore.proxyApps && DataStore.bypass &&
                 DataStore.individual.split('\n').any { it.trim() == SagerNet.application.packageName }
