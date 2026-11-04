@@ -2331,7 +2331,7 @@ object AutoVpnManager {
             if (!periodicRetry && isSameStartedAutoProfile(profileId, mode)) {
                 setActiveFailureStatus(
                     mode,
-                    lastCheckedPingMillis.takeIf { it > 0 },
+                    lastCheckedPingMillis?.takeIf { it > 0 },
                     (failures + 1).coerceAtLeast(1).coerceAtMost(failuresBeforeSwitch()),
                     failuresBeforeSwitch(),
                 )
