@@ -63,7 +63,7 @@ class V2RayTestInstance(
     suspend fun doTestHttp204(testUrl: String, timeoutMillis: Int): Int = withContext(Dispatchers.IO) {
         startCore()
         val port = httpProxyPort ?: throw IOException("Candidate SOCKS route is unavailable")
-        ActiveVpnTrafficProbe.requireConfiguredOrCloudflare204(
+        ActiveVpnTrafficProbe.requireHttp204(
             testUrl,
             Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)),
             timeoutMillis,

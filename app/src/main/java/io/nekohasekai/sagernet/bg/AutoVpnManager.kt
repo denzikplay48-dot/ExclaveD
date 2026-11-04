@@ -108,7 +108,7 @@ object AutoVpnManager {
     private const val TRAFFIC_INCOMING_MAX_BYTES = 256L
     private const val TRAFFIC_CONFIRM_DELAY_MS = 5_000L
     private const val TRAFFIC_DIAGNOSTIC_COOLDOWN_MS = 60_000L
-    private const val SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+    private const val SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS = 2L * 60L * 1000L
     private const val SERVICE_AVAILABILITY_STALE_CHECK_MS = 30_000L
     private const val GOOGLE_AVAILABILITY_CONFIRM_DELAY_MS = 5_000L
     private const val DIRECT_NETWORK_RETRY_DELAY_MS = 45_000L
@@ -537,17 +537,17 @@ object AutoVpnManager {
         if (profileId <= 0L || !isSameStartedAutoProfile(profileId, safeMode)) return
         synchronized(serviceAvailabilityLock) {
             val sameTarget = serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == safeMode
+            val checkedRecently = serviceAvailabilityCheckedAt > 0L &&
+                    System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
             if (sameTarget && serviceAvailabilityJob?.isActive == true) {
-                if (System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_STALE_CHECK_MS) return
+                if (checkedRecently) return
                 serviceAvailabilityJob?.cancel()
                 serviceAvailabilityJob = null
             }
             val hasCompletedResults = serviceAvailabilityResults.any {
                 it.state != ServiceAvailabilityProbe.State.CHECKING
             }
-            if (sameTarget && hasCompletedResults && !force &&
-                System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
-            ) return
+            if (sameTarget && hasCompletedResults && checkedRecently && !force) return
 
             googleAvailabilityConfirmationJob?.cancel()
             googleAvailabilityConfirmationJob = null
@@ -611,7 +611,7 @@ object AutoVpnManager {
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
         if (!DataStore.autoVpnEnabled || !SagerNet.started || profileId <= 0L) return
-        scheduleServiceAvailabilityCheck(profileId, mode, force = true)
+        scheduleServiceAvailabilityCheck(profileId, mode)
     }
 
     private fun scheduleGoogleAvailabilityConfirmation(
@@ -1405,7 +1405,7 @@ object AutoVpnManager {
     fun testActiveUrl(): Int {
         val proxy = ServiceAvailabilityProbe.activeProfileProxy()
             ?: throw IOException("Active VPN route is unavailable")
-        return ActiveVpnTrafficProbe.requireConfiguredOrCloudflare204(
+        return ActiveVpnTrafficProbe.requireHttp204(
             DataStore.connectionTestURL,
             proxy,
             timeoutMillis = 5_000,
@@ -2133,7 +2133,8 @@ object AutoVpnManager {
             val result = checkActiveProfile(periodicRetry = true, verifyTrafficPath = true)
             if (!result.bad && isSameStartedAutoProfile(profileId, mode)) {
                 failures = 0
-                setAutoReadyStatus(mode)
+                setAutoReadyStatus(mode, scheduleServices = false)
+                refreshServiceAvailabilityAfterStableCheck(profileId, mode)
                 DiagnosticLog.event(
                     "auto-vpn",
                     "active-retry-recovered source=$source attempt=${index + 1} profile=$profileId mode=$mode",
@@ -2344,7 +2345,8 @@ object AutoVpnManager {
                             scoreRecovery = true,
                         )
                         failures = 0
-                        setAutoReadyStatus(mode)
+                        setAutoReadyStatus(mode, scheduleServices = false)
+                        refreshServiceAvailabilityAfterStableCheck(profileId, mode)
                         outcome = "ready"
                         return@runOnDefaultDispatcher
                     }
@@ -3182,7 +3184,11 @@ object AutoVpnManager {
         }
     }
 
-    /** Keep candidate HTTP probes isolated so a slow custom URL/fallback does not block scan cancellation. */
+    /**
+     * Native URL tests occasionally ignore their own timeout. Run them outside the
+     * scan coroutine so one frozen native call cannot hold the whole Gemini batch
+     * (and therefore the candidate reserve) forever.
+     */
     private suspend fun runCandidateUrlTest(
         instance: V2RayTestInstance,
         testUrl: String,
@@ -3192,17 +3198,15 @@ object AutoVpnManager {
             val task = candidateTestExecutor.submit<Int> {
                 runBlocking { instance.doTestHttp204(testUrl, timeoutMillis) }
             }
-            val hardTimeoutMillis = timeoutMillis.toLong().coerceAtLeast(1L) * 4L +
-                    CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS
             try {
                 task.get(
-                    hardTimeoutMillis,
+                    timeoutMillis.toLong().coerceAtLeast(1L) + CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS,
                     TimeUnit.MILLISECONDS,
                 )
             } catch (e: TimeoutException) {
                 task.cancel(true)
                 throw SocketTimeoutException(
-                    "Candidate URL test exceeded ${hardTimeoutMillis}ms"
+                    "Candidate URL test exceeded ${timeoutMillis + CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS}ms"
                 )
             } catch (e: InterruptedException) {
                 task.cancel(true)
@@ -4782,15 +4786,25 @@ object AutoVpnManager {
         }
     }
 
-    private fun setAutoReadyStatus(mode: Int = DataStore.autoVpnMode) {
+    private fun setAutoReadyStatus(
+        mode: Int = DataStore.autoVpnMode,
+        scheduleServices: Boolean = true,
+    ) {
         val safeMode = sanitizeMode(mode)
         if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode) return
         val current = SagerDatabase.proxyDao.getById(DataStore.selectedProxy)
         if ((SagerNet.started || DataStore.startedProfile > 0L || DataStore.autoVpnServiceStartRequested) && current != null) {
             setAutoStatus(safeMode, R.string.auto_vpn_status_ready, current.displayName())
-            scheduleServiceAvailabilityCheck(DataStore.startedProfile, safeMode)
+            if (scheduleServices) scheduleServiceAvailabilityCheck(DataStore.startedProfile, safeMode)
         } else {
             setAutoStatus(null)
+        }
+    }
+
+    private suspend fun refreshServiceAvailabilityAfterStableCheck(profileId: Long, mode: Int) {
+        delay(2_000L)
+        if (isSameStartedAutoProfile(profileId, mode)) {
+            scheduleServiceAvailabilityCheck(profileId, mode, force = true)
         }
     }
 

@@ -411,6 +411,8 @@ object ProfileTestRunner {
             persistLocked()
         }
         logStateCritical("start-persisted resume=$resume workerRunId=$workerRunId")
+        notifyStatus(force = true)
+        notifyListeners(reloadProfiles = false)
 
         if (!resume && resetGroupIds.isNotEmpty()) {
             val cleared = resetGroupIds.distinct().chunked(PROFILE_TEST_DB_CHUNK_SIZE).sumOf {
@@ -431,7 +433,6 @@ object ProfileTestRunner {
             )
         }
 
-        notifyStatus(force = true)
         notifyListeners(reloadProfiles = !resume)
 
         enqueueWorker(
