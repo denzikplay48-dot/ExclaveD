@@ -42,12 +42,12 @@ internal object ServiceAvailabilityProbe {
     }
 
     enum class Service(val nameRes: Int, val url: String) {
+        GOOGLE(R.string.auto_vpn_service_google, "https://www.google.com/generate_204"),
         CHATGPT(R.string.auto_vpn_service_chatgpt, "https://chatgpt.com/"),
         GEMINI(R.string.auto_vpn_service_gemini, "https://gemini.google.com/"),
         TELEGRAM(R.string.auto_vpn_service_telegram, "https://web.telegram.org/"),
         YOUTUBE(R.string.auto_vpn_service_youtube, "https://www.youtube.com/generate_204"),
         INSTAGRAM(R.string.auto_vpn_service_instagram, "https://www.instagram.com/"),
-        GOOGLE(R.string.auto_vpn_service_google, "https://www.google.com/generate_204"),
     }
 
     data class Result(

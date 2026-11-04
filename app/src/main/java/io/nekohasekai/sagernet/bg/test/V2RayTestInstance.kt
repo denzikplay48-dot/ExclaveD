@@ -24,6 +24,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import io.nekohasekai.sagernet.bg.GuardedProcessPool
+import io.nekohasekai.sagernet.bg.ActiveVpnTrafficProbe
 import io.nekohasekai.sagernet.bg.ExitIpGeoChecker
 import io.nekohasekai.sagernet.bg.LocalResolver
 import io.nekohasekai.sagernet.bg.proto.V2RayInstance
@@ -39,6 +40,7 @@ import kotlinx.coroutines.withContext
 import libsagernetcore.Libsagernetcore
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
 class V2RayTestInstance(
@@ -56,6 +58,16 @@ class V2RayTestInstance(
     suspend fun doTest(): Int = withContext(Dispatchers.IO) {
         startCore()
         Libsagernetcore.urlTest(v2rayPoint, "", link, timeout)
+    }
+
+    suspend fun doTestHttp204(testUrl: String, timeoutMillis: Int): Int = withContext(Dispatchers.IO) {
+        startCore()
+        val port = httpProxyPort ?: throw IOException("Candidate SOCKS route is unavailable")
+        ActiveVpnTrafficProbe.requireHttp204(
+            testUrl,
+            Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)),
+            timeoutMillis,
+        )
     }
 
     suspend fun startForExitIpCheck() = withContext(Dispatchers.IO) {

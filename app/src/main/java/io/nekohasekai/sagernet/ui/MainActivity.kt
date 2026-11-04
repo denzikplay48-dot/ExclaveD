@@ -191,6 +191,8 @@ class MainActivity : ThemedActivity(),
             displayFragmentWithId(R.id.nav_configuration)
         }
 
+        binding.fab.isFocusable = SagerNet.isTv
+        binding.fab.isFocusableInTouchMode = SagerNet.isTv
         binding.fab.setOnClickListener {
             if (state.canStop) {
                 DiagnosticLog.critical(

@@ -373,6 +373,8 @@
     <string name="auto_vpn_precheck_enabled_sum">Test the selected candidate before connecting it</string>
     <string name="auto_vpn_traffic_monitor_beta">Traffic-based check (Beta)</string>
     <string name="auto_vpn_traffic_monitor_beta_sum">Use suspicious traffic patterns to trigger an extra Auto VPN profile check</string>
+    <string name="auto_vpn_traffic_download_beta">Traffic download test (Beta)</string>
+    <string name="auto_vpn_traffic_download_beta_sum">Download a small test file through the active VPN to estimate throughput; uses extra data and battery</string>
     <string name="auto_vpn_network_checking">Checking network...</string>
     <string name="auto_vpn_network_normal">Regular VPN</string>
     <string name="auto_vpn_network_whitelist">Whitelist mode</string>

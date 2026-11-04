@@ -603,7 +603,7 @@ class BaseService {
                         VpnSubscriptionUpdateScheduler.onVpnStarted()
                         GroupSourceSyncer.onVpnStarted()
                         AutoVpnManager.onVpnStarted(
-                            urlTester = { data.binder.urlTest() },
+                            urlTester = { AutoVpnManager.testActiveUrl() },
                             trafficSampler = { onMainDispatcher { data.binder.autoTrafficSample() } },
                         )
                     }

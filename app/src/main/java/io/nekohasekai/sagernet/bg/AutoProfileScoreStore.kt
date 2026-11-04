@@ -19,8 +19,6 @@ internal object AutoProfileScoreStore {
         PERIODIC,
     }
 
-    private data class ProfileKey(val mode: Int, val profileId: Long)
-
     data class ScanPhases(
         val vip: List<ProxyEntity>,
         val regular: List<ProxyEntity>,
@@ -36,7 +34,8 @@ internal object AutoProfileScoreStore {
         val vip: Boolean = false,
     )
 
-    private const val VERSION_PREFIX = "v2|"
+    private const val VERSION_PREFIX = "v3|"
+    private const val LEGACY_VERSION_PREFIX = "v2|"
     private const val INITIAL_SCORE = 25
     private const val VIP_ENTER_SCORE = 50
     private const val VIP_EXIT_SCORE = 40
@@ -46,7 +45,7 @@ internal object AutoProfileScoreStore {
     private const val PERSIST_DELAY_MS = 5_000L
 
     private val lock = Any()
-    private val records = LinkedHashMap<ProfileKey, ProfileScore>()
+    private val records = LinkedHashMap<Long, ProfileScore>()
     private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loaded = false
     private var dirty = false
@@ -123,7 +122,7 @@ internal object AutoProfileScoreStore {
         val safeMode = sanitizeMode(mode)
         val scores = synchronized(lock) {
             profiles.associate { profile ->
-                profile.id to (records[ProfileKey(safeMode, profile.id)] ?: ProfileScore())
+                profile.id to (records[profile.id] ?: ProfileScore())
             }
         }
         val vipCount = profiles.count { scores[it.id]?.vip == true }
@@ -146,19 +145,19 @@ internal object AutoProfileScoreStore {
         return ScanPhases(vipProfiles, regularProfiles)
     }
 
-    fun score(profile: ProxyEntity?, mode: Int): Int {
+    fun score(profile: ProxyEntity?, @Suppress("UNUSED_PARAMETER") mode: Int): Int {
         if (profile == null || profile.id <= 0L) return INITIAL_SCORE
         ensureLoaded()
         return synchronized(lock) {
-            records[ProfileKey(sanitizeMode(mode), profile.id)]?.score ?: INITIAL_SCORE
+            records[profile.id]?.score ?: INITIAL_SCORE
         }
     }
 
-    fun isVip(profile: ProxyEntity?, mode: Int): Boolean {
+    fun isVip(profile: ProxyEntity?, @Suppress("UNUSED_PARAMETER") mode: Int): Boolean {
         if (profile == null || profile.id <= 0L) return false
         ensureLoaded()
         return synchronized(lock) {
-            records[ProfileKey(sanitizeMode(mode), profile.id)]?.vip == true
+            records[profile.id]?.vip == true
         }
     }
 
@@ -178,13 +177,20 @@ internal object AutoProfileScoreStore {
         transform: (ProfileScore, Long) -> ProfileScore,
     ) {
         if (profile.id <= 0L) return
+        if (!AutoVpnManager.profileAllowed(profile, mode)) {
+            DiagnosticLog.event(
+                "auto-vpn",
+                "profile-score-ignored-ineligible mode=${sanitizeMode(mode)} profile=${profile.id} reason=$reason",
+            )
+            return
+        }
         ensureLoaded()
         val safeMode = sanitizeMode(mode)
         val now = System.currentTimeMillis()
         val old: ProfileScore
         val updated: ProfileScore
         synchronized(lock) {
-            val key = ProfileKey(safeMode, profile.id)
+            val key = profile.id
             old = records[key] ?: ProfileScore()
             updated = transform(old, now)
             records[key] = updated
@@ -201,6 +207,7 @@ internal object AutoProfileScoreStore {
 
     private fun ensureLoaded() {
         if (loaded) return
+        var persistMigratedData = false
         synchronized(lock) {
             if (loaded) return
             records.clear()
@@ -212,8 +219,33 @@ internal object AutoProfileScoreStore {
                     .filter { it.isNotBlank() }
                     .forEach { item ->
                         val fields = item.split(',')
+                        if (fields.size != 6) return@forEach
+                        val id = fields[0].toLongOrNull()?.takeIf { it > 0L } ?: return@forEach
+                        val score = fields[1].toIntOrNull()?.coerceIn(0, 100) ?: return@forEach
+                        val successes = fields[2].toIntOrNull()?.coerceAtLeast(0) ?: return@forEach
+                        val strongSuccesses = fields[3].toIntOrNull()?.coerceAtLeast(0) ?: return@forEach
+                        val updatedAt = fields[4].toLongOrNull()?.coerceAtLeast(0L) ?: return@forEach
+                        val storedVip = fields[5] == "1"
+                        val eligible = score >= VIP_ENTER_SCORE &&
+                                successes >= VIP_MIN_SUCCESSES &&
+                                strongSuccesses >= VIP_MIN_STRONG_SUCCESSES
+                        records[id] = ProfileScore(
+                            score = score,
+                            successes = successes,
+                            strongSuccesses = strongSuccesses,
+                            updatedAt = updatedAt,
+                            vip = if (storedVip) score >= VIP_EXIT_SCORE else eligible,
+                        )
+                    }
+            } else if (encoded.startsWith(LEGACY_VERSION_PREFIX)) {
+                encoded.removePrefix(LEGACY_VERSION_PREFIX)
+                    .split(';')
+                    .asSequence()
+                    .filter { it.isNotBlank() }
+                    .forEach { item ->
+                        val fields = item.split(',')
                         if (fields.size != 7) return@forEach
-                        val mode = fields[0].toIntOrNull()?.let(::sanitizeMode) ?: return@forEach
+                        fields[0].toIntOrNull()?.let(::sanitizeMode) ?: return@forEach
                         val id = fields[1].toLongOrNull()?.takeIf { it > 0L } ?: return@forEach
                         val score = fields[2].toIntOrNull()?.coerceIn(0, 100) ?: return@forEach
                         val successes = fields[3].toIntOrNull()?.coerceAtLeast(0) ?: return@forEach
@@ -223,18 +255,27 @@ internal object AutoProfileScoreStore {
                         val eligible = score >= VIP_ENTER_SCORE &&
                                 successes >= VIP_MIN_SUCCESSES &&
                                 strongSuccesses >= VIP_MIN_STRONG_SUCCESSES
-                        records[ProfileKey(mode, id)] = ProfileScore(
+                        val migrated = ProfileScore(
                             score = score,
                             successes = successes,
                             strongSuccesses = strongSuccesses,
                             updatedAt = updatedAt,
                             vip = if (storedVip) score >= VIP_EXIT_SCORE else eligible,
                         )
+                        val existing = records[id]
+                        if (existing == null || migrated.score > existing.score ||
+                            (migrated.score == existing.score && migrated.updatedAt > existing.updatedAt)
+                        ) {
+                            records[id] = migrated
+                        }
                     }
+                dirty = true
             }
             trimIfNeededLocked()
             loaded = true
+            persistMigratedData = dirty
         }
+        if (persistMigratedData) schedulePersist()
     }
 
     private fun schedulePersist(immediate: Boolean = false) {
@@ -260,10 +301,9 @@ internal object AutoProfileScoreStore {
         val encoded = records.entries
             .sortedByDescending { it.value.updatedAt }
             .take(MAX_RECORDS)
-            .joinToString(";") { (key, score) ->
+            .joinToString(";") { (profileId, score) ->
                 listOf(
-                    key.mode,
-                    key.profileId,
+                    profileId,
                     score.score,
                     score.successes,
                     score.strongSuccesses,
