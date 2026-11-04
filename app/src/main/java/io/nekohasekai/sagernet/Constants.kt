@@ -143,6 +143,7 @@ object Key {
     const val AUTO_VPN_SCANNED_IDS_NON_RU = "autoVpnScannedIdsNonRu"
     const val AUTO_VPN_SCANNED_IDS_GEMINI = "autoVpnScannedIdsGemini"
     const val AUTO_VPN_SERVICE_START_REQUESTED = "autoVpnServiceStartRequested"
+    const val AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT = "autoVpnServiceAvailabilitySnapshot"
     const val AUTO_VPN_DIRECT_SEARCH_TOKEN = "autoVpnDirectSearchToken"
     const val AUTO_VPN_DIRECT_SEARCH_HEARTBEAT = "autoVpnDirectSearchHeartbeat"
     const val AUTO_VPN_RESET_GEMINI_REJECTED = "autoVpnResetGeminiRejected"
