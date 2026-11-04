@@ -289,7 +289,6 @@ object AutoVpnManager {
     private var autoScanJob: Job? = null
     private var trafficMonitorJob: Job? = null
     private var trafficDiagnosticJob: Job? = null
-    @Volatile
     private val serviceAvailabilityLock = Any()
     private var serviceAvailabilityJob: Job? = null
     private var googleAvailabilityConfirmationJob: Job? = null
