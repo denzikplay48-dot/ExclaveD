@@ -398,6 +398,9 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnReserveIdsGemini by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_GEMINI)
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
     var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
+    var autoVpnSiteSwitchFilters by configurationStore.stringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS) {
+        setOf("GOOGLE", "YOUTUBE", "CHATGPT")
+    }
     var autoVpnFloatingSwitchEnabled by configurationStore.boolean(Key.AUTO_VPN_FLOATING_SWITCH_ENABLED)
     var autoVpnFloatingSwitchX by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_X) { -1 }
     var autoVpnFloatingSwitchY by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_Y) { -1 }

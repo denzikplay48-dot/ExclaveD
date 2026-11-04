@@ -821,6 +821,8 @@
     <string name="auto_vpn_traffic_monitor_beta_sum">При подозрительной активности трафика запускать дополнительную проверку Auto VPN</string>
     <string name="auto_vpn_traffic_download_beta">Тест загрузки трафика (Бета)</string>
     <string name="auto_vpn_traffic_download_beta_sum">Загружать небольшой тестовый файл через активный VPN для оценки скорости; расходует трафик и батарею</string>
+    <string name="auto_vpn_site_switch_filter_title">Переключать VPN, если выбранные сайты недоступны</string>
+    <string name="auto_vpn_site_switch_filter_summary">Выбранные сайты учитываются во всех авто-режимах. Auto Gemini дополнительно всегда требует доступ Gemini. Сбой подтверждается повторно при доступной обычной сети.</string>
     <string name="auto_vpn_network_checking">Проверка сети...</string>
     <string name="auto_vpn_network_normal">Обычный VPN</string>
     <string name="auto_vpn_network_whitelist">Режим белого списка</string>
