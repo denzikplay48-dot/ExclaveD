@@ -1282,6 +1282,7 @@ object AutoVpnManager {
             pendingAutoServiceTransition = false
         }
         verifyCurrentSoon(urlTester)
+        scheduleServiceAvailabilityFallback(DataStore.startedProfile, sanitizeMode(DataStore.autoVpnMode))
     }
 
     fun testActiveUrl(): Int {
@@ -4335,22 +4336,105 @@ object AutoVpnManager {
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityAfterConnectJob?.cancel()
             serviceAvailabilityAfterConnectJob = runOnDefaultDispatcher {
-                delay(2_000L)
-                if (!isSameStartedAutoProfile(profileId, mode)) {
-                    DiagnosticLog.event(
+                try {
+                    delay(2_000L)
+                    repeat(5) { attempt ->
+                        if (!isSameSelectedAutoProfile(profileId, mode)) {
+                            DiagnosticLog.event(
+                                "auto-vpn-services",
+                                "post-connect-availability-skipped profile=$profileId mode=$mode reason=profile-changed",
+                            )
+                            return@runOnDefaultDispatcher
+                        }
+                        if (SagerNet.started) {
+                            DiagnosticLog.event(
+                                "auto-vpn-services",
+                                "post-connect-availability-start profile=$profileId mode=$mode " +
+                                        "tunnelReadyAfterAttempts=${attempt + 1}",
+                            )
+                            scheduleServiceAvailabilityCheck(profileId, mode, force = true)
+                            return@runOnDefaultDispatcher
+                        }
+                        delay(1_000L)
+                    }
+                    DiagnosticLog.warn(
                         "auto-vpn-services",
-                        "post-connect-availability-skipped profile=$profileId mode=$mode reason=profile-changed",
+                        "post-connect-availability-failed profile=$profileId mode=$mode reason=tunnel-not-ready",
                     )
-                    return@runOnDefaultDispatcher
+                } finally {
+                    val currentJob = currentCoroutineContext()[Job]
+                    synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityAfterConnectJob === currentJob) {
+                            serviceAvailabilityAfterConnectJob = null
+                        }
+                    }
                 }
-                DiagnosticLog.event(
-                    "auto-vpn-services",
-                    "post-connect-availability-start profile=$profileId mode=$mode",
-                )
-                scheduleServiceAvailabilityCheck(profileId, mode, force = true)
             }
         }
     }
+
+    private fun scheduleServiceAvailabilityFallback(profileId: Long, mode: Int) {
+        val safeMode = sanitizeMode(mode)
+        if (profileId <= 0L) return
+        synchronized(serviceAvailabilityLock) {
+            if (serviceAvailabilityAfterConnectJob?.isActive == true) return
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "post-connect-availability-fallback-scheduled profile=$profileId mode=$safeMode",
+            )
+            serviceAvailabilityAfterConnectJob = runOnDefaultDispatcher {
+                try {
+                    delay(POST_CONNECT_VERIFY_DELAYS_MS.sum() + 2_000L)
+                    if (!isSameSelectedAutoProfile(profileId, safeMode)) {
+                        DiagnosticLog.event(
+                            "auto-vpn-services",
+                            "post-connect-availability-fallback-skipped profile=$profileId mode=$safeMode reason=profile-changed",
+                        )
+                        return@runOnDefaultDispatcher
+                    }
+                    if (hasServiceAvailabilityState(profileId, safeMode)) {
+                        DiagnosticLog.event(
+                            "auto-vpn-services",
+                            "post-connect-availability-fallback-skipped profile=$profileId mode=$safeMode reason=check-already-started",
+                        )
+                        return@runOnDefaultDispatcher
+                    }
+
+                    repeat(5) { attempt ->
+                        if (!isSameSelectedAutoProfile(profileId, safeMode)) {
+                            return@runOnDefaultDispatcher
+                        }
+                        if (SagerNet.started) {
+                            DiagnosticLog.warn(
+                                "auto-vpn-services",
+                                "post-connect-availability-fallback-start profile=$profileId mode=$safeMode " +
+                                        "tunnelReadyAfterAttempts=${attempt + 1}",
+                            )
+                            scheduleServiceAvailabilityCheck(profileId, safeMode)
+                            return@runOnDefaultDispatcher
+                        }
+                        delay(1_000L)
+                    }
+                    DiagnosticLog.warn(
+                        "auto-vpn-services",
+                        "post-connect-availability-fallback-failed profile=$profileId mode=$safeMode reason=tunnel-not-ready",
+                    )
+                } finally {
+                    val currentJob = currentCoroutineContext()[Job]
+                    synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityAfterConnectJob === currentJob) {
+                            serviceAvailabilityAfterConnectJob = null
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isSameSelectedAutoProfile(profileId: Long, mode: Int): Boolean =
+        DataStore.autoVpnEnabled &&
+                DataStore.autoVpnMode == sanitizeMode(mode) &&
+                DataStore.startedProfile == profileId
 
     private fun hasServiceAvailabilityState(profileId: Long, mode: Int): Boolean = synchronized(serviceAvailabilityLock) {
         val sameTarget = serviceAvailabilityProfileId == profileId &&
