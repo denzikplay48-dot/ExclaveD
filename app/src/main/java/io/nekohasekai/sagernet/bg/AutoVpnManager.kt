@@ -1800,6 +1800,13 @@ object AutoVpnManager {
                     "active-monitor-tick tick=$tick elapsedMs=${System.currentTimeMillis() - monitorStartedAt} " +
                             "profile=${DataStore.startedProfile} immediateVerifyActive=${immediateVerifyJob?.isActive == true}",
                 )
+                if (immediateVerifyJob?.isActive == true) {
+                    DiagnosticLog.event(
+                        "auto-vpn",
+                        "active-monitor-skipped-during-post-connect profile=${DataStore.startedProfile}",
+                    )
+                    continue
+                }
                 try {
                     val profileId = DataStore.startedProfile
                     val mode = sanitizeMode(DataStore.autoVpnMode)
@@ -1854,6 +1861,16 @@ object AutoVpnManager {
                 } catch (e: Exception) {
                     DiagnosticLog.error("auto-vpn", "active-monitor-tick-failed", e)
                     Logs.w(e)
+                    val mode = sanitizeMode(DataStore.autoVpnMode)
+                    val checkingStatus = app.getString(
+                        R.string.auto_vpn_status_checking_active,
+                        modeName(mode),
+                    )
+                    if (isSameStartedAutoProfile(DataStore.startedProfile, mode) &&
+                        DataStore.autoVpnStatusText == checkingStatus
+                    ) {
+                        setAutoReadyStatus(mode, scheduleServices = false)
+                    }
                 }
             }
         }
@@ -2003,6 +2020,13 @@ object AutoVpnManager {
     private suspend fun diagnoseTrafficSignal(profileId: Long, mode: Int) {
         val safeMode = sanitizeMode(mode)
         if (!isSameStartedAutoProfile(profileId, safeMode)) return
+        if (immediateVerifyJob?.isActive == true) {
+            DiagnosticLog.event(
+                "auto-vpn",
+                "traffic-diagnostic-skipped-during-post-connect profile=$profileId mode=$safeMode",
+            )
+            return
+        }
         DiagnosticLog.event("auto-vpn", "traffic-signal profile=$profileId mode=$safeMode")
 
         val first = checkActiveProfile(verifyTrafficPath = true)
@@ -2118,6 +2142,7 @@ object AutoVpnManager {
                     return@runOnDefaultDispatcher
                 }
                 var connectFailures = 0
+                var serviceAvailabilityScheduled = false
                 for ((index, delayMs) in POST_CONNECT_VERIFY_DELAYS_MS.withIndex()) {
                     delay(delayMs)
                     if (!isSameStartedAutoProfile(profileId, mode)) {
@@ -2160,7 +2185,22 @@ object AutoVpnManager {
                                 "ping=${ping ?: "error"} elapsedMs=${System.currentTimeMillis() - pingStartedAt} " +
                                 "profile=$profileId mode=$mode",
                     )
-                    val traffic = verifyRealTrafficPath(profileId, mode, "post-connect")
+                    if (!serviceAvailabilityScheduled && countryAccepted && ping != null && ping <= badPingMillis()) {
+                        refreshServiceAvailabilityAfterStableCheck(profileId, mode)
+                        serviceAvailabilityScheduled = true
+                    }
+                    val traffic = try {
+                        verifyRealTrafficPath(profileId, mode, "post-connect")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        DiagnosticLog.error(
+                            "auto-vpn-services",
+                            "post-connect-traffic-probe-failed profile=$profileId mode=$mode attempt=${index + 1}",
+                            e,
+                        )
+                        null
+                    }
                     if (countryAccepted && ping != null && ping <= badPingMillis() && traffic != null) {
                         recordActiveTrafficSuccess(
                             profileId,
@@ -2171,7 +2211,6 @@ object AutoVpnManager {
                         )
                         failures = 0
                         setAutoReadyStatus(mode, scheduleServices = false)
-                        refreshServiceAvailabilityAfterStableCheck(profileId, mode)
                         outcome = "ready"
                         return@runOnDefaultDispatcher
                     }
@@ -2211,6 +2250,11 @@ object AutoVpnManager {
             } catch (e: Exception) {
                 outcome = "error-${e.javaClass.simpleName}"
                 DiagnosticLog.error("auto-vpn", "post-connect-verification-failed profile=$profileId mode=$mode", e)
+                if (verificationGeneration == immediateVerifyGeneration.get() &&
+                    isSameStartedAutoProfile(profileId, mode)
+                ) {
+                    setAutoReadyStatus(mode, scheduleServices = false)
+                }
                 throw e
             } finally {
                 val pendingStatus = pendingVerificationStatus
@@ -2250,6 +2294,23 @@ object AutoVpnManager {
         val urlTester = activeUrlTester ?: return ActiveCheckResult(checkCurrentProfileBad())
         if (profileId <= 0L || !isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
         setAutoStatus(mode, R.string.auto_vpn_status_checking_active)
+        return try {
+            checkActiveProfileResult(profileId, mode, urlTester, periodicRetry, verifyTrafficPath)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.error("auto-vpn", "active-profile-check-failed profile=$profileId mode=$mode", e)
+            ActiveCheckResult(true, lastCheckedPingMillis)
+        }
+    }
+
+    private suspend fun checkActiveProfileResult(
+        profileId: Long,
+        mode: Int,
+        urlTester: () -> Int,
+        periodicRetry: Boolean,
+        verifyTrafficPath: Boolean,
+    ): ActiveCheckResult {
         val ping = testStartedConnection(
             profileId,
             mode,
@@ -4295,7 +4356,10 @@ object AutoVpnManager {
         val sameTarget = serviceAvailabilityProfileId == profileId &&
                 serviceAvailabilityMode == sanitizeMode(mode)
         sameTarget && (
-                serviceAvailabilityResults.any { it.state != ServiceAvailabilityProbe.State.CHECKING } ||
+                serviceAvailabilityResults.any {
+                    it.state != ServiceAvailabilityProbe.State.CHECKING &&
+                            it.state != ServiceAvailabilityProbe.State.NOT_CHECKED
+                } ||
                         (serviceAvailabilityJob?.isActive == true &&
                                 System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_STALE_CHECK_MS)
                 )
