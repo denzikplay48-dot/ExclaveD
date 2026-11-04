@@ -138,6 +138,7 @@ object Key {
     const val AUTO_VPN_RESERVE_IDS_NON_RU = "autoVpnReserveIdsNonRu"
     const val AUTO_VPN_RESERVE_IDS_GEMINI = "autoVpnReserveIdsGemini"
     const val AUTO_VPN_SERVICE_START_REQUESTED = "autoVpnServiceStartRequested"
+    const val AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT = "autoVpnServiceAvailabilitySnapshot"
     const val AUTO_VPN_RESET_GEMINI_REJECTED = "autoVpnResetGeminiRejected"
     const val AUTO_VPN_RESET_EXIT_COUNTRY_REJECTED = "autoVpnResetExitCountryRejected"
     const val AUTO_VPN_FLOATING_SWITCH_ENABLED = "autoVpnFloatingSwitchEnabled"

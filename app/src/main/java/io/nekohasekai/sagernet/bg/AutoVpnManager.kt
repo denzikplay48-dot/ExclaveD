@@ -56,6 +56,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
 import java.net.IDN
 import java.net.HttpURLConnection
@@ -140,6 +142,11 @@ object AutoVpnManager {
         var countryCode: String?,
         val source: String,
         val scoreEvent: AutoProfileScoreStore.Event,
+    )
+
+    private data class ServiceAvailabilitySnapshot(
+        val checkedAt: Long,
+        val results: List<ServiceAvailabilityProbe.Result>,
     )
 
     private data class AutoProgressSnapshot(
@@ -439,14 +446,25 @@ object AutoVpnManager {
     fun serviceAvailabilityText(mode: Int = DataStore.autoVpnMode): String? {
         if (mode != DataStore.autoVpnMode) return null
         val profileId = DataStore.startedProfile
-        val results = if (DataStore.autoVpnEnabled && SagerNet.started && profileId > 0L &&
-            profileId == serviceAvailabilityProfileId && mode == serviceAvailabilityMode &&
-            serviceAvailabilityResults.isNotEmpty()
-        ) {
-            serviceAvailabilityResults
-        } else {
-            ServiceAvailabilityProbe.notCheckedResults()
+        val connectionActive = DataStore.autoVpnEnabled && SagerNet.started && profileId > 0L
+        val localSnapshot = if (connectionActive) synchronized(serviceAvailabilityLock) {
+            if (profileId == serviceAvailabilityProfileId && mode == serviceAvailabilityMode &&
+                serviceAvailabilityResults.isNotEmpty()
+            ) {
+                ServiceAvailabilitySnapshot(
+                    checkedAt = serviceAvailabilityCheckedAt,
+                    results = serviceAvailabilityResults.toList(),
+                )
+            } else null
+        } else null
+        val persistedSnapshot = if (connectionActive) readServiceAvailabilitySnapshot(profileId, mode) else null
+        val snapshot = when {
+            localSnapshot == null -> persistedSnapshot
+            persistedSnapshot == null -> localSnapshot
+            persistedSnapshot.checkedAt >= localSnapshot.checkedAt -> persistedSnapshot
+            else -> localSnapshot
         }
+        val results = snapshot?.results ?: ServiceAvailabilityProbe.notCheckedResults()
         val serviceLines = results.joinToString("\n") { result ->
             val statusRes = when (result.state) {
                 ServiceAvailabilityProbe.State.NOT_CHECKED -> R.string.auto_vpn_service_not_checked
@@ -467,6 +485,63 @@ object AutoVpnManager {
         return "${networkStatusText()}\n$serviceLines"
     }
 
+    private fun readServiceAvailabilitySnapshot(profileId: Long, mode: Int): ServiceAvailabilitySnapshot? {
+        val encodedSnapshot = DataStore.autoVpnServiceAvailabilitySnapshot
+        if (encodedSnapshot.isBlank()) return null
+        return runCatching {
+            val json = JSONObject(encodedSnapshot)
+            if (json.optLong("profileId", -1L) != profileId || json.optInt("mode", -1) != mode) {
+                return null
+            }
+            val encodedResults = json.optJSONArray("results") ?: return null
+            val byService = LinkedHashMap<ServiceAvailabilityProbe.Service, ServiceAvailabilityProbe.Result>()
+            for (index in 0 until encodedResults.length()) {
+                val item = encodedResults.optJSONObject(index) ?: continue
+                val service = ServiceAvailabilityProbe.Service.values()
+                    .firstOrNull { it.name == item.optString("service") } ?: continue
+                val state = ServiceAvailabilityProbe.State.values()
+                    .firstOrNull { it.name == item.optString("state") } ?: continue
+                byService[service] = ServiceAvailabilityProbe.Result(
+                    service = service,
+                    state = state,
+                    responseCode = if (item.isNull("responseCode")) null else item.optInt("responseCode"),
+                    elapsedMillis = item.optLong("elapsedMillis"),
+                )
+            }
+            if (ServiceAvailabilityProbe.Service.values().any { it !in byService }) return null
+            ServiceAvailabilitySnapshot(
+                checkedAt = json.optLong("checkedAt"),
+                results = ServiceAvailabilityProbe.Service.values().map { byService.getValue(it) },
+            )
+        }.onFailure {
+            DiagnosticLog.warn("auto-vpn-services", "stored-availability-snapshot-read-failed", it)
+        }.getOrNull()
+    }
+
+    private fun persistServiceAvailabilitySnapshotLocked() {
+        runCatching {
+            val encodedResults = JSONArray().apply {
+                serviceAvailabilityResults.forEach { result ->
+                    put(
+                        JSONObject()
+                            .put("service", result.service.name)
+                            .put("state", result.state.name)
+                            .put("responseCode", result.responseCode ?: JSONObject.NULL)
+                            .put("elapsedMillis", result.elapsedMillis),
+                    )
+                }
+            }
+            DataStore.autoVpnServiceAvailabilitySnapshot = JSONObject()
+                .put("profileId", serviceAvailabilityProfileId)
+                .put("mode", serviceAvailabilityMode)
+                .put("checkedAt", serviceAvailabilityCheckedAt)
+                .put("results", encodedResults)
+                .toString()
+        }.onFailure {
+            DiagnosticLog.error("auto-vpn-services", "stored-availability-snapshot-write-failed", it)
+        }
+    }
+
     private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
         clearPendingExitCountryConfirmation()
         synchronized(serviceAvailabilityLock) {
@@ -480,6 +555,7 @@ object AutoVpnManager {
             serviceAvailabilityMode = sanitizeMode(mode)
             serviceAvailabilityCheckedAt = 0L
             serviceAvailabilityResults = emptyList()
+            persistServiceAvailabilitySnapshotLocked()
         }
     }
 
@@ -496,6 +572,7 @@ object AutoVpnManager {
             serviceAvailabilityMode = -1
             serviceAvailabilityCheckedAt = 0L
             serviceAvailabilityResults = emptyList()
+            persistServiceAvailabilitySnapshotLocked()
         }
     }
 
@@ -503,18 +580,23 @@ object AutoVpnManager {
         val safeMode = sanitizeMode(mode)
         if (profileId <= 0L || !isSameStartedAutoProfile(profileId, safeMode)) return
         synchronized(serviceAvailabilityLock) {
-            val sameTarget = serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == safeMode
-            val checkedRecently = serviceAvailabilityCheckedAt > 0L &&
-                    System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
-            if (sameTarget && serviceAvailabilityJob?.isActive == true) {
+            val persistedSnapshot = readServiceAvailabilitySnapshot(profileId, safeMode)
+            val localSameTarget = serviceAvailabilityProfileId == profileId && serviceAvailabilityMode == safeMode
+            val sameTarget = localSameTarget || persistedSnapshot != null
+            val lastCheckedAt = maxOf(serviceAvailabilityCheckedAt, persistedSnapshot?.checkedAt ?: 0L)
+            val checkedRecently = lastCheckedAt > 0L &&
+                    System.currentTimeMillis() - lastCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
+            if (localSameTarget && serviceAvailabilityJob?.isActive == true) {
                 if (checkedRecently && !force) return
                 serviceAvailabilityJob?.cancel()
                 serviceAvailabilityJob = null
             }
             val hasCompletedResults = serviceAvailabilityResults.any {
                 it.state != ServiceAvailabilityProbe.State.CHECKING
-            }
-            if (sameTarget && hasCompletedResults && checkedRecently && !force) return
+            } || persistedSnapshot?.results?.any {
+                it.state != ServiceAvailabilityProbe.State.CHECKING
+            } == true
+            if (sameTarget && (hasCompletedResults || persistedSnapshot != null) && checkedRecently && !force) return
 
             googleAvailabilityConfirmationJob?.cancel()
             googleAvailabilityConfirmationJob = null
@@ -522,6 +604,7 @@ object AutoVpnManager {
             serviceAvailabilityMode = safeMode
             serviceAvailabilityCheckedAt = System.currentTimeMillis()
             serviceAvailabilityResults = ServiceAvailabilityProbe.checkingResults()
+            persistServiceAvailabilitySnapshotLocked()
             serviceAvailabilityJob = runOnDefaultDispatcher {
                 val startedAt = System.currentTimeMillis()
                 try {
@@ -538,6 +621,7 @@ object AutoVpnManager {
                             serviceAvailabilityResults = results
                             serviceAvailabilityCheckedAt = System.currentTimeMillis()
                             serviceAvailabilityJob = null
+                            persistServiceAvailabilitySnapshotLocked()
                             true
                         }
                     }
@@ -567,6 +651,7 @@ object AutoVpnManager {
                             }
                             serviceAvailabilityCheckedAt = System.currentTimeMillis()
                             serviceAvailabilityJob = null
+                            persistServiceAvailabilitySnapshotLocked()
                         }
                     }
                     notifyAutoStateChanged()
@@ -606,6 +691,7 @@ object AutoVpnManager {
                                 if (it.service == ServiceAvailabilityProbe.Service.GOOGLE) second else it
                             }
                             serviceAvailabilityCheckedAt = System.currentTimeMillis()
+                            persistServiceAvailabilitySnapshotLocked()
                             true
                         }
                     }

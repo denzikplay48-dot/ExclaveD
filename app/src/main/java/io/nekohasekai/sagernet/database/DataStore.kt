@@ -354,7 +354,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var connectionTestBreakSeconds by configurationStore.stringToInt(Key.CONNECTION_TEST_BREAK_SECONDS) { 5 }
     var connectionTestProgressIntervalSeconds by configurationStore.stringToInt(Key.CONNECTION_TEST_PROGRESS_INTERVAL_SECONDS) { 5 }
     var connectionTestSortIntervalSeconds by configurationStore.stringToInt(Key.CONNECTION_TEST_SORT_INTERVAL_SECONDS) { 10 }
-    var manualGeminiTestFilterEnabled by configurationStore.boolean(Key.MANUAL_GEMINI_TEST_FILTER_ENABLED)
+    var manualGeminiTestFilterEnabled by configurationStore.boolean(Key.MANUAL_GEMINI_TEST_FILTER_ENABLED) { true }
     var autoVpnEnabled by configurationStore.boolean(Key.AUTO_VPN_ENABLED) { true }
     var autoVpnPrecheckEnabled by configurationStore.boolean(Key.AUTO_VPN_PRECHECK_ENABLED) { true }
     var autoVpnTrafficMonitorEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED) { false }
@@ -397,6 +397,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnReserveIdsNonRu by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_NON_RU)
     var autoVpnReserveIdsGemini by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_GEMINI)
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
+    var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
     var autoVpnFloatingSwitchEnabled by configurationStore.boolean(Key.AUTO_VPN_FLOATING_SWITCH_ENABLED)
     var autoVpnFloatingSwitchX by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_X) { -1 }
     var autoVpnFloatingSwitchY by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_Y) { -1 }
