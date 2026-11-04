@@ -464,6 +464,8 @@ object DiagnosticLog {
         "post-connect-verification-finished" to "Проверка после подключения завершена",
         "post-connect-country-check-finished" to "Проверена страна выхода",
         "gemini-rendered-probe" to "Проверка страницы Gemini",
+        "gemini-probe-select" to "Выбран способ проверки Gemini",
+        "gemini-probe-result" to "Результат HTTP-проверки Gemini",
         "active-monitor-start" to "Запущен контроль активного профиля",
         "active-monitor-tick" to "Плановая проверка активного профиля",
         "active-monitor-stop" to "Контроль активного профиля остановлен",
@@ -495,6 +497,9 @@ object DiagnosticLog {
         "main" to "главный процесс", "sdk" to "версия Android", "device" to "устройство",
         "pid" to "ID процесса", "process" to "процесс", "flavor" to "сборка", "version" to "версия",
         "selected" to "выбран профиль", "startedProfile" to "подключённый профиль", "mainStack" to "стек главного потока",
+        "path" to "способ проверки", "renderRequested" to "проверка страницы запрошена",
+        "finalUrl" to "конечный адрес", "state" to "результат классификации", "http" to "HTTP-код",
+        "errorCode" to "код сетевой ошибки",
     )
 
     fun humanReadableHeader(): String = buildString {
@@ -607,6 +612,57 @@ object DiagnosticLog {
                 rawValue == "true" -> "да"
                 rawValue == "false" -> "нет"
                 key == "mode" -> when (rawValue) { "1" -> "без RU"; "2" -> "Gemini"; else -> "обычный" }
+                key == "path" -> when (rawValue) {
+                    "rendered-webview" -> "отрисованная страница"
+                    "http" -> "HTTP-запрос"
+                    "none" -> "не выполнялась"
+                    else -> rawValue
+                }
+                key == "state" -> when (rawValue) {
+                    "STARTED" -> "начата"
+                    "CANCELLED" -> "отменена"
+                    "AVAILABLE" -> "доступен"
+                    "RESTRICTED" -> "региональное ограничение"
+                    "CHALLENGE" -> "проверка Google"
+                    "FORBIDDEN" -> "запрет 403"
+                    "UNAVAILABLE" -> "недоступен"
+                    "NO_RESPONSE" -> "нет ответа"
+                    "UNKNOWN" -> "неясный ответ"
+                    else -> rawValue
+                }
+                key == "reason" -> when {
+                    rawValue.startsWith("dom-settled-") -> "страница загружена; " + when (rawValue.removePrefix("dom-settled-")) {
+                        "no-known-gemini-marker" -> "нет известного признака доступности или блокировки"
+                        "http-403" -> "ответ HTTP 403"
+                        else -> rawValue.removePrefix("dom-settled-")
+                    }
+                    rawValue.startsWith("main-frame-error-") -> "ошибка основного кадра WebView, код ${rawValue.removePrefix("main-frame-error-")}"
+                    rawValue.startsWith("exception-") -> "сетевая ошибка типа ${rawValue.removePrefix("exception-")}"
+                    rawValue == "route-supported" -> "маршрут VPN поддерживает WebView"
+                    rawValue == "render-not-requested" -> "проверка отрисованной страницы не запрошена"
+                    rawValue == "service-mode-not-vpn" -> "служба работает не в режиме VPN"
+                    rawValue == "socks-mode-enabled" -> "включён режим SOCKS"
+                    rawValue == "system-tun-not-active" -> "системный туннель не используется"
+                    rawValue == "app-excluded-from-vpn" -> "приложение исключено из VPN"
+                    rawValue == "no-active-vpn-route" -> "нет активного маршрута VPN"
+                    rawValue == "webview-load-start" -> "загрузка страницы начата"
+                    rawValue == "webview-create-failed" -> "не удалось создать WebView"
+                    rawValue == "dom-result-unavailable" -> "не удалось прочитать состояние страницы"
+                    rawValue == "page-load-timeout" -> "истекло время загрузки страницы"
+                    rawValue == "http-403-load-timeout" -> "HTTP 403; загрузка не завершилась"
+                    rawValue == "http-403" -> "ответ HTTP 403"
+                    rawValue == "google-sorry-url" -> "открыта страница Google Sorry"
+                    rawValue == "google-challenge-marker" -> "обнаружен признак проверки Google"
+                    rawValue == "regional-restriction-marker" -> "обнаружен признак регионального ограничения"
+                    rawValue == "gemini-app-route" -> "открыт адрес приложения Gemini"
+                    rawValue == "server-error" -> "ошибка сервера"
+                    rawValue == "no-known-gemini-marker" -> "нет известного признака доступности или блокировки"
+                    rawValue == "probe-cancelled" -> "проверка отменена"
+                    rawValue == "render-process-gone" -> "процесс отрисовки WebView завершился"
+                    rawValue == "load-url-failed" -> "не удалось открыть адрес"
+                    rawValue == "classification-exception" -> "ошибка классификации результата"
+                    else -> rawValue
+                }
                 key in setOf("source", "reason", "outcome", "trigger") -> humanizeJournalEvent(rawValue)
                 else -> rawValue
             }

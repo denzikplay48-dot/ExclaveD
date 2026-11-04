@@ -10,6 +10,7 @@ import io.nekohasekai.sagernet.Key
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.TunImplementation
 import io.nekohasekai.sagernet.database.DataStore
+import io.nekohasekai.sagernet.utils.DiagnosticLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -61,6 +62,8 @@ internal object ServiceAvailabilityProbe {
         val finalLocation: String? = null,
     )
 
+    internal data class GeminiClassification(val state: State, val reason: String)
+
     fun checkingResults(): List<Result> = Service.values().map {
         Result(it, State.CHECKING, null, 0L)
     }
@@ -71,7 +74,15 @@ internal object ServiceAvailabilityProbe {
 
     suspend fun checkAll(renderGeminiPage: Boolean = false): List<Result> = coroutineScope {
         val proxy = activeProfileProxy()
-            ?: return@coroutineScope Service.values().map { Result(it, State.NO_TUNNEL_ROUTE, null, 0L) }
+            ?: run {
+                if (renderGeminiPage) {
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "gemini-probe-select path=none renderRequested=true reason=${renderedGeminiRouteUnavailableReason() ?: "no-active-vpn-route"}",
+                    )
+                }
+                return@coroutineScope Service.values().map { Result(it, State.NO_TUNNEL_ROUTE, null, 0L) }
+            }
         val semaphore = Semaphore(3)
         Service.values().map { service ->
             async(Dispatchers.IO) {
@@ -80,6 +91,17 @@ internal object ServiceAvailabilityProbe {
                     val first = if (useRenderedGemini) {
                         checkGemini(renderPage = true)
                     } else {
+                        if (service == Service.GEMINI) {
+                            val reason = if (!renderGeminiPage) {
+                                "render-not-requested"
+                            } else {
+                                renderedGeminiRouteUnavailableReason() ?: "rendered-probe-disabled"
+                            }
+                            DiagnosticLog.event(
+                                "auto-vpn-services",
+                                "gemini-probe-select path=http renderRequested=$renderGeminiPage reason=$reason",
+                            )
+                        }
                         checkOnce(service, proxy)
                     }
                     if (useRenderedGemini) {
@@ -136,18 +158,39 @@ internal object ServiceAvailabilityProbe {
 
     suspend fun checkGemini(renderPage: Boolean = false): Result {
         val proxy = activeProfileProxy()
-            ?: return Result(Service.GEMINI, State.NO_TUNNEL_ROUTE, null, 0L)
-        if (renderPage && supportsRenderedGeminiRoute()) return GeminiRenderedPageProbe.check()
+            ?: run {
+                DiagnosticLog.event(
+                    "auto-vpn-services",
+                    "gemini-probe-select path=none renderRequested=$renderPage reason=${renderedGeminiRouteUnavailableReason() ?: "no-active-vpn-route"}",
+                )
+                return Result(Service.GEMINI, State.NO_TUNNEL_ROUTE, null, 0L)
+            }
+        if (renderPage && supportsRenderedGeminiRoute()) {
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "gemini-probe-select path=rendered-webview renderRequested=true reason=route-supported",
+            )
+            return GeminiRenderedPageProbe.check()
+        }
+        val reason = if (!renderPage) "render-not-requested" else renderedGeminiRouteUnavailableReason()
+            ?: "rendered-probe-disabled"
+        DiagnosticLog.event(
+            "auto-vpn-services",
+            "gemini-probe-select path=http renderRequested=$renderPage reason=$reason",
+        )
         return checkOnce(Service.GEMINI, proxy)
     }
 
-    private fun supportsRenderedGeminiRoute(): Boolean {
-        if (DataStore.serviceMode != Key.MODE_VPN || DataStore.requireSocks ||
-            DataStore.tunImplementation != TunImplementation.SYSTEM
-        ) return false
+    private fun supportsRenderedGeminiRoute(): Boolean = renderedGeminiRouteUnavailableReason() == null
+
+    private fun renderedGeminiRouteUnavailableReason(): String? {
+        if (DataStore.serviceMode != Key.MODE_VPN) return "service-mode-not-vpn"
+        if (DataStore.requireSocks) return "socks-mode-enabled"
+        if (DataStore.tunImplementation != TunImplementation.SYSTEM) return "system-tun-not-active"
         val selfExcludedFromAppVpn = DataStore.proxyApps && DataStore.bypass &&
                 DataStore.individual.split('\n').any { it.trim() == SagerNet.application.packageName }
-        return !selfExcludedFromAppVpn
+        if (selfExcludedFromAppVpn) return "app-excluded-from-vpn"
+        return null
     }
 
     private suspend fun checkOnce(service: Service, proxy: Proxy): Result = withContext(Dispatchers.IO) {
@@ -169,8 +212,13 @@ internal object ServiceAvailabilityProbe {
             val finalLocation = safeLocation(connection.url)
             if (service == Service.GEMINI) {
                 val body = readResponseBody(connection, code)
-                val state = classifyGeminiResponse(connection.url, code, body)
-                Result(service, state, code, elapsed, finalLocation)
+                val classification = classifyGeminiResponseDetailed(connection.url, code, body)
+                DiagnosticLog.event(
+                    "auto-vpn-services",
+                    "gemini-probe-result path=http http=$code finalUrl=$finalLocation " +
+                            "state=${classification.state.name} reason=${classification.reason} elapsedMs=$elapsed",
+                )
+                Result(service, classification.state, code, elapsed, finalLocation)
             } else {
                 val state = when {
                     service == Service.GOOGLE && code == HttpURLConnection.HTTP_NO_CONTENT -> State.AVAILABLE
@@ -182,7 +230,14 @@ internal object ServiceAvailabilityProbe {
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (service == Service.GEMINI) {
+                DiagnosticLog.event(
+                    "auto-vpn-services",
+                    "gemini-probe-result path=http http=none finalUrl=unknown state=NO_RESPONSE " +
+                            "reason=exception-${e.javaClass.simpleName} elapsedMs=${elapsedMillis(startedAt)}",
+                )
+            }
             Result(service, State.NO_RESPONSE, null, elapsedMillis(startedAt))
         } finally {
             connection?.disconnect()
@@ -190,16 +245,21 @@ internal object ServiceAvailabilityProbe {
     }
 
     internal fun classifyGeminiResponse(url: URL, code: Int, body: String): State {
+        return classifyGeminiResponseDetailed(url, code, body).state
+    }
+
+    internal fun classifyGeminiResponseDetailed(url: URL, code: Int, body: String): GeminiClassification {
         val normalized = body.lowercase()
         return when {
-            isGoogleSorry(url) || hasGoogleChallenge(normalized) -> State.CHALLENGE
-            hasRegionalRestriction(normalized) -> State.RESTRICTED
-            code == HttpURLConnection.HTTP_FORBIDDEN -> State.FORBIDDEN
+            isGoogleSorry(url) -> GeminiClassification(State.CHALLENGE, "google-sorry-url")
+            hasGoogleChallenge(normalized) -> GeminiClassification(State.CHALLENGE, "google-challenge-marker")
+            hasRegionalRestriction(normalized) -> GeminiClassification(State.RESTRICTED, "regional-restriction-marker")
+            code == HttpURLConnection.HTTP_FORBIDDEN -> GeminiClassification(State.FORBIDDEN, "http-403")
             url.host.equals("gemini.google.com", ignoreCase = true) &&
                     url.path.trimEnd('/').let { it == "/app" || it.startsWith("/app/") } &&
-                    code in 200..399 -> State.AVAILABLE
-            code >= 500 -> State.UNAVAILABLE
-            else -> State.UNKNOWN
+                    code in 200..399 -> GeminiClassification(State.AVAILABLE, "gemini-app-route")
+            code >= 500 -> GeminiClassification(State.UNAVAILABLE, "server-error")
+            else -> GeminiClassification(State.UNKNOWN, "no-known-gemini-marker")
         }
     }
 

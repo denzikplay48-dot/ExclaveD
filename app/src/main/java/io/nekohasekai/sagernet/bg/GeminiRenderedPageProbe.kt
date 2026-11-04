@@ -41,6 +41,12 @@ internal object GeminiRenderedPageProbe {
         var pageFinishedAt = 0L
         var completed = false
 
+        DiagnosticLog.event(
+            "auto-vpn-services",
+            "gemini-rendered-probe path=rendered-webview state=STARTED http=none " +
+                    "url=${safeLocation(PAGE_URL)} reason=webview-load-start",
+        )
+
         lateinit var pollDom: Runnable
         lateinit var timeout: Runnable
 
@@ -55,7 +61,7 @@ internal object GeminiRenderedPageProbe {
             }
         }
 
-        fun finish(state: ServiceAvailabilityProbe.State) {
+        fun finish(state: ServiceAvailabilityProbe.State, reason: String) {
             if (completed) return
             completed = true
             val code = mainFrameStatus ?: if (pageFinishedAt > 0L) HttpURLConnection.HTTP_OK else null
@@ -63,8 +69,9 @@ internal object GeminiRenderedPageProbe {
             val elapsed = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
             DiagnosticLog.event(
                 "auto-vpn-services",
-                "gemini-rendered-probe state=${state.name} http=${code ?: "none"} " +
-                        "url=${location.ifBlank { "unknown" }} elapsedMs=$elapsed",
+                "gemini-rendered-probe path=rendered-webview state=${state.name} " +
+                        "http=${code ?: "none"} url=${location.ifBlank { "unknown" }} " +
+                        "reason=$reason elapsedMs=$elapsed",
             )
             destroyWebView()
             if (continuation.isActive) {
@@ -88,24 +95,30 @@ internal object GeminiRenderedPageProbe {
                 lastUrl = snapshot.optString("url", lastUrl)
                 val text = snapshot.optString("text").take(MAX_TEXT_LENGTH)
                 val effectiveCode = mainFrameStatus ?: HttpURLConnection.HTTP_OK
-                val state = runCatching {
-                    ServiceAvailabilityProbe.classifyGeminiResponse(URL(lastUrl), effectiveCode, text)
-                }.getOrDefault(ServiceAvailabilityProbe.State.UNKNOWN)
+                val classification = runCatching {
+                    ServiceAvailabilityProbe.classifyGeminiResponseDetailed(URL(lastUrl), effectiveCode, text)
+                }.getOrDefault(
+                    ServiceAvailabilityProbe.GeminiClassification(
+                        ServiceAvailabilityProbe.State.UNKNOWN,
+                        "classification-exception",
+                    ),
+                )
+                val state = classification.state
                 if (state == ServiceAvailabilityProbe.State.AVAILABLE ||
                     state == ServiceAvailabilityProbe.State.RESTRICTED ||
                     state == ServiceAvailabilityProbe.State.CHALLENGE
                 ) {
-                    finish(state)
+                    finish(state, classification.reason)
                     return
                 }
                 if (pageFinishedAt > 0L && SystemClock.elapsedRealtime() - pageFinishedAt >= DOM_SETTLE_TIMEOUT_MS) {
-                    finish(state)
+                    finish(state, "dom-settled-${classification.reason}")
                     return
                 }
             } else if (pageFinishedAt > 0L &&
                 SystemClock.elapsedRealtime() - pageFinishedAt >= DOM_SETTLE_TIMEOUT_MS
             ) {
-                finish(ServiceAvailabilityProbe.State.UNKNOWN)
+                finish(ServiceAvailabilityProbe.State.UNKNOWN, "dom-result-unavailable")
                 return
             }
             handler.postDelayed(pollDom, DOM_POLL_INTERVAL_MS)
@@ -132,6 +145,11 @@ internal object GeminiRenderedPageProbe {
                 } else {
                     ServiceAvailabilityProbe.State.NO_RESPONSE
                 },
+                if (mainFrameStatus == HttpURLConnection.HTTP_FORBIDDEN) {
+                    "http-403-load-timeout"
+                } else {
+                    "page-load-timeout"
+                },
             )
         }
 
@@ -139,6 +157,11 @@ internal object GeminiRenderedPageProbe {
             handler.post {
                 if (!completed) {
                     completed = true
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "gemini-rendered-probe path=rendered-webview state=CANCELLED http=${mainFrameStatus ?: "none"} " +
+                                "url=${safeLocation(lastUrl)} reason=probe-cancelled",
+                    )
                     destroyWebView()
                 }
             }
@@ -149,7 +172,7 @@ internal object GeminiRenderedPageProbe {
             val view = runCatching {
                 WebView(ContextThemeWrapper(SagerNet.application, R.style.Theme_SagerNet))
             }.getOrElse {
-                finish(ServiceAvailabilityProbe.State.UNKNOWN)
+                finish(ServiceAvailabilityProbe.State.UNKNOWN, "webview-create-failed")
                 return@post
             }
             webView = view
@@ -194,17 +217,19 @@ internal object GeminiRenderedPageProbe {
                     request: WebResourceRequest,
                     error: WebResourceError,
                 ) {
-                    if (request.isForMainFrame) finish(ServiceAvailabilityProbe.State.NO_RESPONSE)
+                    if (request.isForMainFrame) {
+                        finish(ServiceAvailabilityProbe.State.NO_RESPONSE, "main-frame-error-${error.errorCode}")
+                    }
                 }
 
                 override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
-                    finish(ServiceAvailabilityProbe.State.UNKNOWN)
+                    finish(ServiceAvailabilityProbe.State.UNKNOWN, "render-process-gone")
                     return true
                 }
             }
             handler.postDelayed(timeout, LOAD_TIMEOUT_MS)
             runCatching { view.loadUrl(PAGE_URL) }
-                .onFailure { finish(ServiceAvailabilityProbe.State.NO_RESPONSE) }
+                .onFailure { finish(ServiceAvailabilityProbe.State.NO_RESPONSE, "load-url-failed") }
         }
     }
 
