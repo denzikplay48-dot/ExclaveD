@@ -135,6 +135,7 @@ class ConfigurationFragment @JvmOverloads constructor(
     private var profileTestStatusPollJob: Job? = null
     private var observedAutoTestResultsResetGeneration = AutoVpnManager.testResultsResetGeneration
     private var autoStatusReceiver: BroadcastReceiver? = null
+    private var lastLoggedAutoMonitorSnapshot: String? = null
 
     companion object {
         private const val ALL_GROUP_ID = 0L
@@ -1330,7 +1331,18 @@ class ConfigurationFragment @JvmOverloads constructor(
     }
 
     override fun onAutoVpnStateChanged() {
-        if (!isUiActiveForProfileTest()) return
+        val uiActive = isUiActiveForProfileTest()
+        val monitorState = AutoVpnManager.serviceAvailabilityText().orEmpty().replace('\n', ';')
+        val monitorSnapshot = "${DataStore.startedProfile}|${DataStore.autoVpnMode}|$monitorState"
+        if (monitorSnapshot != lastLoggedAutoMonitorSnapshot) {
+            lastLoggedAutoMonitorSnapshot = monitorSnapshot
+            DiagnosticLog.event(
+                "configuration-ui",
+                "site-monitor-state-delivered active=$uiActive profile=${DataStore.startedProfile} " +
+                        "mode=${DataStore.autoVpnMode} state=$monitorState",
+            )
+        }
+        if (!uiActive) return
         updateProfileTestStatusBar()
         updateProfileTestMenu()
         updateProfileTestStatusPollJob()
@@ -2711,6 +2723,8 @@ class ConfigurationFragment @JvmOverloads constructor(
             PopupMenu.OnMenuItemClickListener {
 
             lateinit var entity: ProxyListItem
+            private var lastRenderedAutoMonitorState: Triple<Int, Long, String>? = null
+            private var lastRenderedActiveCheckState: Triple<Int, Long, Boolean>? = null
 
             val profileName: TextView = view.findViewById(R.id.profile_name)
             val profileType: TextView = view.findViewById(R.id.profile_type)
@@ -3074,6 +3088,28 @@ class ConfigurationFragment @JvmOverloads constructor(
                 if (DataStore.autoVpnMode == mode) {
                     if (DataStore.autoVpnEnabled) {
                         profileStatus.text = AutoVpnManager.cardStatusText(mode)
+                        val renderedStatus = profileStatus.text.toString()
+                        val activeCheckStatus = getString(
+                            R.string.auto_vpn_status_checking_active,
+                            AutoVpnManager.modeName(mode),
+                        )
+                        val verifyStatusPrefix = getString(
+                            R.string.auto_vpn_status_verifying_connected,
+                            AutoVpnManager.modeName(mode),
+                            1,
+                            3,
+                        ).substringBefore("1")
+                        val activeCheckVisible = renderedStatus.contains(activeCheckStatus) ||
+                                renderedStatus.contains(verifyStatusPrefix)
+                        val activeProfileId = DataStore.startedProfile
+                        if (lastRenderedActiveCheckState != Triple(mode, activeProfileId, activeCheckVisible)) {
+                            lastRenderedActiveCheckState = Triple(mode, activeProfileId, activeCheckVisible)
+                            DiagnosticLog.event(
+                                "configuration-ui",
+                                "auto-card-active-check-rendered profile=$activeProfileId mode=$mode " +
+                                        "checking=$activeCheckVisible",
+                            )
+                        }
                         profileStatus.setTextColor(
                             requireContext().getColour(
                                 if (AutoVpnManager.hasLastPingError()) {
@@ -3090,6 +3126,16 @@ class ConfigurationFragment @JvmOverloads constructor(
                     val serviceText = AutoVpnManager.serviceAvailabilityText(mode)
                     profileServiceStatus.text = serviceText.orEmpty()
                     profileServiceStatus.isVisible = !serviceText.isNullOrBlank()
+                    val renderedMonitorState = serviceText.orEmpty().replace('\n', ';')
+                    val activeProfileId = DataStore.startedProfile
+                    if (lastRenderedAutoMonitorState != Triple(mode, activeProfileId, renderedMonitorState)) {
+                        lastRenderedAutoMonitorState = Triple(mode, activeProfileId, renderedMonitorState)
+                        DiagnosticLog.event(
+                            "configuration-ui",
+                            "site-monitor-card-rendered profile=$activeProfileId mode=$mode " +
+                                    "state=$renderedMonitorState",
+                        )
+                    }
                     selectedView.visibility = if (DataStore.autoVpnEnabled) View.VISIBLE else View.INVISIBLE
                 } else {
                     profileStatus.text = ""

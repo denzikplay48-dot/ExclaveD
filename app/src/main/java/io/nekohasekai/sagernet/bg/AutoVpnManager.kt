@@ -89,6 +89,7 @@ object AutoVpnManager {
     private const val DIRECT_NETWORK_CONNECT_TIMEOUT_MS = 3_000
     private const val DIRECT_NETWORK_READ_TIMEOUT_MS = 3_000
     private const val DIRECT_NETWORK_CHECK_URL = "https://ya.ru/"
+    private const val EXIT_COUNTRY_CONFIRMATION_DELAY_MS = 45_000L
     private const val NETWORK_STATUS_CONNECT_TIMEOUT_MS = 3_000
     private const val NETWORK_STATUS_READ_TIMEOUT_MS = 3_000
     private const val NETWORK_STATUS_NETWORK_TIMEOUT_MS = 5_000L
@@ -131,6 +132,14 @@ object AutoVpnManager {
         val bad: Boolean,
         val ping: Int? = null,
         val exitCountryRejected: Boolean = false,
+    )
+
+    private data class PendingExitCountryConfirmation(
+        val profile: ProxyEntity,
+        val mode: Int,
+        var countryCode: String?,
+        val source: String,
+        val scoreEvent: AutoProfileScoreStore.Event,
     )
 
     private data class AutoProgressSnapshot(
@@ -215,6 +224,7 @@ object AutoVpnManager {
     private val switchMutex = Mutex()
     private val scoreNetworkCheckMutex = Mutex()
     private val exitCountryCheckMutex = Mutex()
+    private val exitCountryConfirmationLock = Any()
     private val failedUntil = ConcurrentHashMap<Long, Long>()
     private val workingCache = ConcurrentHashMap<Long, CachedWorking>()
     private val activeTrafficSpeedBaselines = mutableMapOf<Long, Long>()
@@ -224,6 +234,8 @@ object AutoVpnManager {
     private val manualCycleIds = mutableMapOf<Int, LinkedHashSet<Long>>()
     private val scannedIds = mutableMapOf<Int, LinkedHashSet<Long>>()
     private val exitCountryRejectedWriteLock = Any()
+    private var exitCountryConfirmationJob: Job? = null
+    private var pendingExitCountryConfirmation: PendingExitCountryConfirmation? = null
     @Volatile
     private var cachedExitCountryRejectedKeys: Set<String>? = null
     @Volatile
@@ -286,6 +298,7 @@ object AutoVpnManager {
     private var monitorJob: Job? = null
     private var immediateVerifyJob: Job? = null
     private val immediateVerifyGeneration = AtomicLong(0L)
+    private val activeProfileCheckGeneration = AtomicLong(0L)
     private var autoScanJob: Job? = null
     private var trafficMonitorJob: Job? = null
     private var trafficDiagnosticJob: Job? = null
@@ -455,6 +468,7 @@ object AutoVpnManager {
     }
 
     private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
+        clearPendingExitCountryConfirmation()
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
@@ -470,6 +484,7 @@ object AutoVpnManager {
     }
 
     private fun clearServiceAvailability() {
+        clearPendingExitCountryConfirmation()
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
@@ -2294,13 +2309,33 @@ object AutoVpnManager {
         val mode = sanitizeMode(DataStore.autoVpnMode)
         val urlTester = activeUrlTester ?: return ActiveCheckResult(checkCurrentProfileBad())
         if (profileId <= 0L || !isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
-        setAutoStatus(mode, R.string.auto_vpn_status_checking_active)
+        val checkGeneration = activeProfileCheckGeneration.incrementAndGet()
+        if (!periodicRetry) setAutoStatus(mode, R.string.auto_vpn_status_checking_active)
         return try {
-            checkActiveProfileResult(profileId, mode, urlTester, periodicRetry, verifyTrafficPath)
+            val result = checkActiveProfileResult(profileId, mode, urlTester, periodicRetry, verifyTrafficPath)
+            if (!result.bad && checkGeneration == activeProfileCheckGeneration.get() &&
+                isSameStartedAutoProfile(profileId, mode)
+            ) {
+                failures = 0
+                setAutoReadyStatus(mode)
+                DiagnosticLog.event(
+                    "auto-vpn",
+                    "active-check-status-cleared reason=successful-attempt profile=$profileId mode=$mode",
+                )
+            }
+            result
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             DiagnosticLog.error("auto-vpn", "active-profile-check-failed profile=$profileId mode=$mode", e)
+            if (!periodicRetry && isSameStartedAutoProfile(profileId, mode)) {
+                setActiveFailureStatus(
+                    mode,
+                    lastCheckedPingMillis.takeIf { it > 0 },
+                    (failures + 1).coerceAtLeast(1).coerceAtMost(failuresBeforeSwitch()),
+                    failuresBeforeSwitch(),
+                )
+            }
             ActiveCheckResult(true, lastCheckedPingMillis)
         }
     }
@@ -2339,7 +2374,17 @@ object AutoVpnManager {
         }
 
         if (verifyTrafficPath || pingFailed) {
-            if (traffic == null) return ActiveCheckResult(true, ping, exitCountryRejected)
+            if (traffic == null) {
+                if (!periodicRetry) {
+                    setActiveFailureStatus(
+                        mode,
+                        ping,
+                        (failures + 1).coerceAtLeast(1).coerceAtMost(failuresBeforeSwitch()),
+                        failuresBeforeSwitch(),
+                    )
+                }
+                return ActiveCheckResult(true, ping, exitCountryRejected)
+            }
             recordActiveTrafficSuccess(
                 profileId,
                 mode,
@@ -2348,14 +2393,29 @@ object AutoVpnManager {
                 scoreRecovery = pingFailed,
             )
             if (exitCountryRejected || (ping != null && ping > badPingMillis())) {
+                if (!periodicRetry) {
+                    setActiveFailureStatus(
+                        mode,
+                        ping,
+                        (failures + 1).coerceAtLeast(1).coerceAtMost(failuresBeforeSwitch()),
+                        failuresBeforeSwitch(),
+                    )
+                }
                 return ActiveCheckResult(true, ping, exitCountryRejected)
             }
-            setAutoReadyStatus(mode)
             return ActiveCheckResult(false, ping ?: traffic.latencyMillis, exitCountryRejected)
         }
-        if (ping == null) return ActiveCheckResult(true, exitCountryRejected = exitCountryRejected)
-        if (exitCountryRejected) return ActiveCheckResult(true, ping, true)
-        setAutoReadyStatus(mode)
+        if (ping == null || exitCountryRejected) {
+            if (!periodicRetry) {
+                setActiveFailureStatus(
+                    mode,
+                    ping,
+                    (failures + 1).coerceAtLeast(1).coerceAtMost(failuresBeforeSwitch()),
+                    failuresBeforeSwitch(),
+                )
+            }
+            return ActiveCheckResult(true, ping, exitCountryRejected)
+        }
         return ActiveCheckResult(false)
     }
 
@@ -2536,21 +2596,149 @@ object AutoVpnManager {
                     "countryName=${geoInfo?.countryName ?: "unknown"} country=${countryCode ?: "unknown"}",
         )
         if (!requiresExitCountryCheck(mode) || (countryCode != null && countryCode != "RU")) {
+            clearPendingExitCountryConfirmation(profileId, mode)
             forgetExitCountryRejectedProfile(profile, "$source-valid")
             return@withLock true
         }
 
-        rememberExitCountryRejectedProfiles(listOf(profileId), "$source-rejected")
-        AutoProfileScoreStore.recordFailure(profile, mode, scoreEvent)
-        profile.status = 3
-        profile.error = if (countryCode == "RU") "Exit country is Russia" else "Exit country is unknown"
-        saveProfileTestResultSafely(profile, "exit-country-rejected")
-        DiagnosticLog.critical(
+        scheduleExitCountryConfirmation(profile, mode, source, scoreEvent, countryCode)
+        DiagnosticLog.warn(
             "auto-vpn",
-            "exit-country-rejected source=$source profile=$profileId mode=$mode " +
-                    "country=${countryCode ?: "unknown"}",
+            "exit-country-awaiting-confirmation source=$source profile=$profileId mode=$mode " +
+                    "country=${countryCode ?: "unknown"} retryAfterMs=$EXIT_COUNTRY_CONFIRMATION_DELAY_MS",
         )
-        false
+        true
+    }
+
+    private fun scheduleExitCountryConfirmation(
+        profile: ProxyEntity,
+        mode: Int,
+        source: String,
+        scoreEvent: AutoProfileScoreStore.Event,
+        firstCountryCode: String?,
+    ) {
+        val safeMode = sanitizeMode(mode)
+        synchronized(exitCountryConfirmationLock) {
+            val current = pendingExitCountryConfirmation
+            if (exitCountryConfirmationJob?.isActive == true && current != null &&
+                current.profile.id == profile.id && current.mode == safeMode
+            ) return
+
+            exitCountryConfirmationJob?.cancel()
+            pendingExitCountryConfirmation = PendingExitCountryConfirmation(
+                profile = profile,
+                mode = safeMode,
+                countryCode = firstCountryCode,
+                source = source,
+                scoreEvent = scoreEvent,
+            )
+            exitCountryConfirmationJob = runOnDefaultDispatcher {
+                try {
+                    while (isActive && isSameStartedAutoProfile(profile.id, safeMode)) {
+                        delay(EXIT_COUNTRY_CONFIRMATION_DELAY_MS)
+                        if (!isSameStartedAutoProfile(profile.id, safeMode)) return@runOnDefaultDispatcher
+
+                        val pending = synchronized(exitCountryConfirmationLock) {
+                            pendingExitCountryConfirmation?.takeIf {
+                                it.profile.id == profile.id && it.mode == safeMode
+                            }
+                        } ?: return@runOnDefaultDispatcher
+
+                        if (!hasDirectInternet()) {
+                            DiagnosticLog.event(
+                                "auto-vpn",
+                                "exit-country-confirmation-deferred profile=${profile.id} mode=$safeMode " +
+                                        "reason=direct-network-unavailable retryAfterMs=$EXIT_COUNTRY_CONFIRMATION_DELAY_MS",
+                            )
+                            continue
+                        }
+
+                        val confirmedInfo = exitCountryCheckMutex.withLock {
+                            if (!isSameStartedAutoProfile(profile.id, safeMode)) return@withLock null
+                            queryProfileExitGeoInfo(profile, safeMode)
+                        }
+                        if (!isSameStartedAutoProfile(profile.id, safeMode)) return@runOnDefaultDispatcher
+                        if (!hasDirectInternet()) {
+                            DiagnosticLog.event(
+                                "auto-vpn",
+                                "exit-country-confirmation-deferred profile=${profile.id} mode=$safeMode " +
+                                        "reason=direct-network-lost-during-check retryAfterMs=$EXIT_COUNTRY_CONFIRMATION_DELAY_MS",
+                            )
+                            continue
+                        }
+
+                        val confirmedCode = confirmedInfo?.countryCode
+                        recordLastExitCountry(profile.id, confirmedInfo?.countryName)
+                        notifyAutoStateChanged()
+                        DiagnosticLog.event(
+                            "auto-vpn",
+                            "exit-country-confirmation-result profile=${profile.id} mode=$safeMode " +
+                                    "first=${pending.countryCode ?: "unknown"} " +
+                                    "second=${confirmedCode ?: "unknown"}",
+                        )
+
+                        if (confirmedCode != null && confirmedCode != "RU") {
+                            forgetExitCountryRejectedProfile(profile, "${pending.source}-confirmation-valid")
+                            return@runOnDefaultDispatcher
+                        }
+
+                        if (confirmedCode != pending.countryCode) {
+                            synchronized(exitCountryConfirmationLock) {
+                                pendingExitCountryConfirmation?.takeIf {
+                                    it.profile.id == profile.id && it.mode == safeMode
+                                }?.countryCode = confirmedCode
+                            }
+                            DiagnosticLog.warn(
+                                "auto-vpn",
+                                "exit-country-confirmation-changed profile=${profile.id} mode=$safeMode " +
+                                        "nextCheckAfterMs=$EXIT_COUNTRY_CONFIRMATION_DELAY_MS",
+                            )
+                            continue
+                        }
+
+                        rememberExitCountryRejectedProfiles(listOf(profile.id), "${pending.source}-confirmed")
+                        AutoProfileScoreStore.recordFailure(profile, safeMode, pending.scoreEvent)
+                        profile.status = 3
+                        profile.error = if (confirmedCode == "RU") "Exit country is Russia" else "Exit country is unknown"
+                        saveProfileTestResultSafely(profile, "exit-country-rejected-confirmed")
+                        DiagnosticLog.critical(
+                            "auto-vpn",
+                            "exit-country-rejected-confirmed source=${pending.source} profile=${profile.id} " +
+                                    "mode=$safeMode country=${confirmedCode ?: "unknown"}",
+                        )
+                        confirmActiveProfileFailure(profile.id, safeMode, "exit-country-confirmed")
+                        return@runOnDefaultDispatcher
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLog.error(
+                        "auto-vpn",
+                        "exit-country-confirmation-failed profile=${profile.id} mode=$safeMode",
+                        e,
+                    )
+                } finally {
+                    val currentJob = currentCoroutineContext()[Job]
+                    synchronized(exitCountryConfirmationLock) {
+                        if (exitCountryConfirmationJob === currentJob) {
+                            exitCountryConfirmationJob = null
+                            pendingExitCountryConfirmation = null
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun clearPendingExitCountryConfirmation(profileId: Long? = null, mode: Int? = null) {
+        synchronized(exitCountryConfirmationLock) {
+            val pending = pendingExitCountryConfirmation ?: return
+            if (profileId != null && pending.profile.id != profileId) return
+            if (mode != null && pending.mode != sanitizeMode(mode)) return
+            exitCountryConfirmationJob?.cancel()
+            exitCountryConfirmationJob = null
+            pendingExitCountryConfirmation = null
+        }
     }
 
     private suspend fun queryProfileExitGeoInfo(
