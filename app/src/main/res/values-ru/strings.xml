@@ -287,7 +287,7 @@
     <string name="forward_success">Прокси запущен.</string>
     <string name="service_proxy">Прокси-сервис</string>
     <string name="service_vpn">VPN Сервис</string>
-    <string name="auto_connect_summary">Восстановить предыдущее состояние подключения после загрузки устройства или обновления приложения</string>
+    <string name="auto_connect_summary">Восстановить последнее активное VPN-подключение после загрузки устройства или обновления приложения. Если запуск при загрузке не сработает, подключить при открытии приложения</string>
     <string name="auto_connect">Автоматическое подключение</string>
     <string name="show_system_apps">Системные</string>
     <string name="bypass_apps">Обход</string>
@@ -859,5 +859,7 @@
     <string name="auto_vpn_service_restricted">обнаружено региональное ограничение</string>
     <string name="auto_vpn_service_unknown">неясный ответ</string>
     <string name="auto_vpn_service_no_tunnel_route">нельзя проверить через VPN</string>
+    <string name="auto_vpn_service_forbidden">HTTP 403: причина отказа не определена</string>
+    <string name="auto_vpn_service_challenge">Google CAPTCHA или проверка трафика</string>
     <string name="no_subscription_links">&#1057;&#1089;&#1099;&#1083;&#1082;&#1080; &#1087;&#1086;&#1076;&#1087;&#1080;&#1089;&#1086;&#1082; &#1085;&#1077; &#1085;&#1072;&#1081;&#1076;&#1077;&#1085;&#1099;</string>
 </resources>

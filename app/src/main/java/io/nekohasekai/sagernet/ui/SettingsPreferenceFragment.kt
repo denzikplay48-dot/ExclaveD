@@ -91,6 +91,12 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         addPreferencesFromResource(R.xml.global_preferences)
 
         // common
+        findPreference<SwitchPreference>(Key.PERSIST_ACROSS_REBOOT)!!
+            .setOnPreferenceChangeListener { _, newValue ->
+                runCatching { BootReceiver.enabled = newValue as Boolean }
+                    .onFailure { DiagnosticLog.error("boot", "receiver-setting-update-failed", it) }
+                true
+            }
         isProxyApps = findPreference(Key.PROXY_APPS)!!
         val bypassLan = findPreference<SwitchPreference>(Key.BYPASS_LAN)!!
         val requireHttp = findPreference<SwitchPreference>(Key.REQUIRE_HTTP)!!

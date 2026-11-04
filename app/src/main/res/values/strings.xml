@@ -212,7 +212,7 @@
     <string name="bypass_apps">Bypass</string>
     <string name="show_system_apps">Show system apps</string>
     <string name="auto_connect">Auto connect</string>
-    <string name="auto_connect_summary">Restore the previous connection status after device boot or app update</string>
+    <string name="auto_connect_summary">Restore the last active VPN connection after device boot or app update. If boot startup fails, connect when the app is opened</string>
     <!-- notification category -->
     <string name="service_vpn">VPN Service</string>
     <string name="service_proxy">Proxy Service</string>
@@ -395,6 +395,8 @@
     <string name="auto_vpn_service_restricted">regional restriction detected</string>
     <string name="auto_vpn_service_unknown">inconclusive response</string>
     <string name="auto_vpn_service_no_tunnel_route">cannot verify through VPN</string>
+    <string name="auto_vpn_service_forbidden">HTTP 403: reason for denial is unknown</string>
+    <string name="auto_vpn_service_challenge">Google CAPTCHA or traffic challenge</string>
     <string name="auto_vpn_check_interval_seconds">Auto VPN check interval, seconds</string>
     <string name="auto_vpn_bad_ping_millis">Bad ping threshold, ms</string>
     <string name="auto_vpn_failures_before_switch">Failures before switching profile</string>
