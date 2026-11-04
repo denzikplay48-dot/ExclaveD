@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
+import java.io.IOException
 
 internal object ActiveVpnTrafficProbe {
     const val CLOUDFLARE_204_URL = "http://cp.cloudflare.com/generate_204"
@@ -47,7 +48,11 @@ internal object ActiveVpnTrafficProbe {
                 ?: download.firstByteMillis
     }
 
-    suspend fun run(connectionTestUrl: String, proxy: Proxy): Result = withContext(Dispatchers.IO) {
+    suspend fun run(
+        connectionTestUrl: String,
+        proxy: Proxy,
+        downloadEnabled: Boolean = false,
+    ): Result = withContext(Dispatchers.IO) {
         val urls = linkedMapOf<String, String>()
         listOf(connectionTestUrl, CLOUDFLARE_204_URL).forEach { value ->
             runCatching { URL(value.trim()) }.getOrNull()?.let { url ->
@@ -56,34 +61,39 @@ internal object ActiveVpnTrafficProbe {
             }
         }
         Result(
-            endpoints = urls.values.map { checkEndpoint(it, proxy) },
-            download = checkDownload(proxy),
+            endpoints = urls.values.map { checkEndpoint(it, proxy, CONNECT_TIMEOUT_MS) },
+            download = if (downloadEnabled) checkDownload(proxy) else skippedDownload(),
         )
     }
 
-    private fun checkEndpoint(value: String, proxy: Proxy): EndpointResult {
+    fun checkHttp204(value: String, proxy: Proxy, timeoutMillis: Int): EndpointResult =
+        checkEndpoint(value, proxy, timeoutMillis.coerceAtLeast(1))
+
+    fun requireHttp204(value: String, proxy: Proxy, timeoutMillis: Int): Int {
+        val result = checkHttp204(value, proxy, timeoutMillis)
+        if (!result.success) {
+            throw IOException("Expected HTTP 204 from ${result.host}, got ${result.responseCode ?: result.error ?: "no response"}")
+        }
+        return result.elapsedMillis
+    }
+
+    private fun checkEndpoint(value: String, proxy: Proxy, timeoutMillis: Int): EndpointResult {
         val url = URL(value)
         val start = System.nanoTime()
         var connection: HttpURLConnection? = null
         return try {
             connection = url.openConnection(proxy) as? HttpURLConnection
                 ?: return EndpointResult(url.host, null, 0, false, "unsupported-connection")
-            connection.instanceFollowRedirects = true
-            connection.connectTimeout = CONNECT_TIMEOUT_MS
-            connection.readTimeout = READ_TIMEOUT_MS
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = timeoutMillis
+            connection.readTimeout = timeoutMillis
             connection.requestMethod = "GET"
             connection.useCaches = false
             connection.setRequestProperty("Cache-Control", "no-cache, no-store")
             connection.setRequestProperty("Pragma", "no-cache")
             val code = connection.responseCode
             val elapsed = elapsedMillis(start)
-            val success = if (url.host.equals("cp.cloudflare.com", ignoreCase = true) &&
-                url.path == "/generate_204"
-            ) {
-                code == HttpURLConnection.HTTP_NO_CONTENT
-            } else {
-                code in 200..399
-            }
+            val success = code == HttpURLConnection.HTTP_NO_CONTENT
             EndpointResult(url.host, code, elapsed, success)
         } catch (e: Exception) {
             EndpointResult(url.host, null, elapsedMillis(start), false, e.javaClass.simpleName)
@@ -91,6 +101,16 @@ internal object ActiveVpnTrafficProbe {
             connection?.disconnect()
         }
     }
+
+    private fun skippedDownload() = DownloadResult(
+        downloadedBytes = 0L,
+        expectedBytes = 0L,
+        elapsedMillis = 0L,
+        firstByteMillis = null,
+        bytesPerSecond = null,
+        complete = true,
+        error = "disabled",
+    )
 
     private fun checkDownload(proxy: Proxy): DownloadResult {
         val expected = DOWNLOAD_BYTES.toLong()

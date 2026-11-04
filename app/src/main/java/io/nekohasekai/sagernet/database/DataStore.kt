@@ -358,6 +358,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnEnabled by configurationStore.boolean(Key.AUTO_VPN_ENABLED) { true }
     var autoVpnPrecheckEnabled by configurationStore.boolean(Key.AUTO_VPN_PRECHECK_ENABLED) { true }
     var autoVpnTrafficMonitorEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED) { false }
+    var autoVpnTrafficDownloadEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED) { false }
     var autoVpnMode by configurationStore.int(Key.AUTO_VPN_MODE)
     var autoVpnCheckIntervalSeconds by configurationStore.stringToInt(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS) { 120 }
     var autoVpnBadPingMillis by configurationStore.stringToInt(Key.AUTO_VPN_BAD_PING_MILLIS) { 3000 }

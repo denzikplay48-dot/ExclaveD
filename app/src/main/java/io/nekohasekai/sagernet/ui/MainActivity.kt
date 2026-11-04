@@ -182,6 +182,8 @@ class MainActivity : ThemedActivity(),
             displayFragmentWithId(R.id.nav_configuration)
         }
 
+        binding.fab.isFocusable = SagerNet.isTv
+        binding.fab.isFocusableInTouchMode = SagerNet.isTv
         binding.fab.setOnClickListener {
             if (state.canStop) {
                 DiagnosticLog.critical(
@@ -200,11 +202,21 @@ class MainActivity : ThemedActivity(),
                 connect.launch(null)
             }
         }
+        binding.fab.setOnFocusChangeListener { view, hasFocus ->
+            binding.fabFocusRing.visibility = if (hasFocus) View.VISIBLE else View.GONE
+            val scale = if (hasFocus) 1.12f else 1f
+            view.animate()
+                .scaleX(scale)
+                .scaleY(scale)
+                .setDuration(120L)
+                .start()
+        }
         binding.stats.setOnClickListener { if (state == BaseService.State.Connected) binding.stats.testConnection() }
 
         setContentView(binding.root)
 
         changeState(BaseService.State.Idle)
+        if (SagerNet.isTv) binding.fab.post { binding.fab.requestFocus() }
         connection.connect(this, this)
         DataStore.configurationStore.registerChangeListener(this)
 
