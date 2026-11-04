@@ -77,6 +77,39 @@ internal object ActiveVpnTrafficProbe {
         return result.elapsedMillis
     }
 
+    fun requireConfiguredOrCloudflare204(value: String, proxy: Proxy, timeoutMillis: Int): Int {
+        val timeout = timeoutMillis.coerceAtLeast(1)
+        val configuredUrl = runCatching { URL(value.trim()) }.getOrNull()
+        val configuredResult = configuredUrl?.let { checkEndpoint(it.toString(), proxy, timeout) }
+            ?: EndpointResult(value, null, 0, false, "invalid-url")
+        if (configuredResult.success) return configuredResult.elapsedMillis
+
+        val fallbackUrl = URL(CLOUDFLARE_204_URL)
+        if (configuredUrl != null && sameEndpoint(configuredUrl, fallbackUrl)) {
+            throw IOException(
+                "Expected HTTP 204 from ${configuredResult.host}, got " +
+                        "${configuredResult.responseCode ?: configuredResult.error ?: "no response"}"
+            )
+        }
+
+        val fallbackResult = checkEndpoint(CLOUDFLARE_204_URL, proxy, timeout)
+        if (fallbackResult.success) return fallbackResult.elapsedMillis
+
+        throw IOException(
+            "No HTTP 204 response: ${configuredResult.host} returned " +
+                    "${configuredResult.responseCode ?: configuredResult.error ?: "no response"}; " +
+                    "${fallbackResult.host} returned " +
+                    "${fallbackResult.responseCode ?: fallbackResult.error ?: "no response"}"
+        )
+    }
+
+    private fun sameEndpoint(first: URL, second: URL): Boolean =
+        first.protocol.equals(second.protocol, ignoreCase = true) &&
+                first.host.equals(second.host, ignoreCase = true) &&
+                (if (first.port >= 0) first.port else first.defaultPort) ==
+                (if (second.port >= 0) second.port else second.defaultPort) &&
+                first.path == second.path && first.query == second.query
+
     private fun checkEndpoint(value: String, proxy: Proxy, timeoutMillis: Int): EndpointResult {
         val url = URL(value)
         val start = System.nanoTime()

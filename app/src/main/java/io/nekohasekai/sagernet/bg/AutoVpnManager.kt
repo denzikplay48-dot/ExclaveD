@@ -1405,7 +1405,7 @@ object AutoVpnManager {
     fun testActiveUrl(): Int {
         val proxy = ServiceAvailabilityProbe.activeProfileProxy()
             ?: throw IOException("Active VPN route is unavailable")
-        return ActiveVpnTrafficProbe.requireHttp204(
+        return ActiveVpnTrafficProbe.requireConfiguredOrCloudflare204(
             DataStore.connectionTestURL,
             proxy,
             timeoutMillis = 5_000,
@@ -3182,11 +3182,7 @@ object AutoVpnManager {
         }
     }
 
-    /**
-     * Native URL tests occasionally ignore their own timeout. Run them outside the
-     * scan coroutine so one frozen native call cannot hold the whole Gemini batch
-     * (and therefore the candidate reserve) forever.
-     */
+    /** Keep candidate HTTP probes isolated so a slow custom URL/fallback does not block scan cancellation. */
     private suspend fun runCandidateUrlTest(
         instance: V2RayTestInstance,
         testUrl: String,
@@ -3196,15 +3192,17 @@ object AutoVpnManager {
             val task = candidateTestExecutor.submit<Int> {
                 runBlocking { instance.doTestHttp204(testUrl, timeoutMillis) }
             }
+            val hardTimeoutMillis = timeoutMillis.toLong().coerceAtLeast(1L) * 4L +
+                    CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS
             try {
                 task.get(
-                    timeoutMillis.toLong().coerceAtLeast(1L) + CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS,
+                    hardTimeoutMillis,
                     TimeUnit.MILLISECONDS,
                 )
             } catch (e: TimeoutException) {
                 task.cancel(true)
                 throw SocketTimeoutException(
-                    "Candidate URL test exceeded ${timeoutMillis + CANDIDATE_TEST_HARD_TIMEOUT_GRACE_MS}ms"
+                    "Candidate URL test exceeded ${hardTimeoutMillis}ms"
                 )
             } catch (e: InterruptedException) {
                 task.cancel(true)
