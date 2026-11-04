@@ -331,6 +331,7 @@ object AutoVpnManager {
     private var directNetworkRetryJob: Job? = null
     private val serviceAvailabilityLock = Any()
     private var serviceAvailabilityJob: Job? = null
+    private var serviceAvailabilityAfterConnectJob: Job? = null
     private var googleAvailabilityConfirmationJob: Job? = null
     @Volatile
     private var serviceAvailabilityProfileId = -1L
@@ -510,6 +511,8 @@ object AutoVpnManager {
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
+            serviceAvailabilityAfterConnectJob?.cancel()
+            serviceAvailabilityAfterConnectJob = null
             googleAvailabilityConfirmationJob?.cancel()
             googleAvailabilityConfirmationJob = null
             serviceAvailabilityProfileId = profileId
@@ -523,6 +526,8 @@ object AutoVpnManager {
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
+            serviceAvailabilityAfterConnectJob?.cancel()
+            serviceAvailabilityAfterConnectJob = null
             googleAvailabilityConfirmationJob?.cancel()
             googleAvailabilityConfirmationJob = null
             serviceAvailabilityProfileId = -1L
@@ -540,7 +545,7 @@ object AutoVpnManager {
             val checkedRecently = serviceAvailabilityCheckedAt > 0L &&
                     System.currentTimeMillis() - serviceAvailabilityCheckedAt < SERVICE_AVAILABILITY_REFRESH_INTERVAL_MS
             if (sameTarget && serviceAvailabilityJob?.isActive == true) {
-                if (checkedRecently) return
+                if (checkedRecently && !force) return
                 serviceAvailabilityJob?.cancel()
                 serviceAvailabilityJob = null
             }
@@ -558,6 +563,10 @@ object AutoVpnManager {
             serviceAvailabilityJob = runOnDefaultDispatcher {
                 val startedAt = System.currentTimeMillis()
                 try {
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "availability-check-start profile=$profileId mode=$safeMode force=$force",
+                    )
                     val results = ServiceAvailabilityProbe.checkAll()
                     if (!isSameStartedAutoProfile(profileId, safeMode)) return@runOnDefaultDispatcher
                     val accepted = synchronized(serviceAvailabilityLock) {
@@ -4801,10 +4810,31 @@ object AutoVpnManager {
         }
     }
 
-    private suspend fun refreshServiceAvailabilityAfterStableCheck(profileId: Long, mode: Int) {
-        delay(2_000L)
-        if (isSameStartedAutoProfile(profileId, mode)) {
-            scheduleServiceAvailabilityCheck(profileId, mode, force = true)
+    private fun refreshServiceAvailabilityAfterStableCheck(profileId: Long, mode: Int) {
+        if (!isSameStartedAutoProfile(profileId, mode)) {
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "post-connect-availability-not-scheduled profile=$profileId mode=$mode reason=profile-not-current",
+            )
+            return
+        }
+        synchronized(serviceAvailabilityLock) {
+            serviceAvailabilityAfterConnectJob?.cancel()
+            serviceAvailabilityAfterConnectJob = runOnDefaultDispatcher {
+                delay(2_000L)
+                if (!isSameStartedAutoProfile(profileId, mode)) {
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "post-connect-availability-skipped profile=$profileId mode=$mode reason=profile-changed",
+                    )
+                    return@runOnDefaultDispatcher
+                }
+                DiagnosticLog.event(
+                    "auto-vpn-services",
+                    "post-connect-availability-start profile=$profileId mode=$mode",
+                )
+                scheduleServiceAvailabilityCheck(profileId, mode, force = true)
+            }
         }
     }
 
