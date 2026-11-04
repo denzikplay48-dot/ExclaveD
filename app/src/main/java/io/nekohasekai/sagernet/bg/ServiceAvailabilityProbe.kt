@@ -120,6 +120,20 @@ internal object ServiceAvailabilityProbe {
         return checkOnce(Service.GOOGLE, proxy)
     }
 
+    suspend fun checkService(service: Service): Result {
+        val proxy = activeProfileProxy()
+            ?: return Result(service, State.NO_TUNNEL_ROUTE, null, 0L)
+        val first = checkOnce(service, proxy)
+        if (first.state != State.NO_RESPONSE) return first
+        delay(RETRY_DELAY_MS)
+        val second = checkOnce(service, proxy)
+        return if (second.state == State.NO_RESPONSE) {
+            second.copy(elapsedMillis = first.elapsedMillis + RETRY_DELAY_MS + second.elapsedMillis)
+        } else {
+            second
+        }
+    }
+
     suspend fun checkGemini(renderPage: Boolean = false): Result {
         val proxy = activeProfileProxy()
             ?: return Result(Service.GEMINI, State.NO_TUNNEL_ROUTE, null, 0L)

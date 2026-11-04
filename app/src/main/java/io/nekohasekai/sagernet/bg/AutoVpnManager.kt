@@ -353,6 +353,7 @@ object AutoVpnManager {
     private var serviceAvailabilityAfterConnectJob: Job? = null
     private var googleAvailabilityConfirmationJob: Job? = null
     private var geminiAvailabilityConfirmationJob: Job? = null
+    private val siteAvailabilityConfirmationJobs = mutableMapOf<ServiceAvailabilityProbe.Service, Job>()
     @Volatile
     private var serviceAvailabilityProfileId = -1L
     @Volatile
@@ -610,6 +611,8 @@ object AutoVpnManager {
             googleAvailabilityConfirmationJob = null
             geminiAvailabilityConfirmationJob?.cancel()
             geminiAvailabilityConfirmationJob = null
+            siteAvailabilityConfirmationJobs.values.forEach { it.cancel() }
+            siteAvailabilityConfirmationJobs.clear()
             serviceAvailabilityProfileId = profileId
             serviceAvailabilityMode = sanitizeMode(mode)
             serviceAvailabilityCheckedAt = 0L
@@ -629,6 +632,8 @@ object AutoVpnManager {
             googleAvailabilityConfirmationJob = null
             geminiAvailabilityConfirmationJob?.cancel()
             geminiAvailabilityConfirmationJob = null
+            siteAvailabilityConfirmationJobs.values.forEach { it.cancel() }
+            siteAvailabilityConfirmationJobs.clear()
             serviceAvailabilityProfileId = -1L
             serviceAvailabilityMode = -1
             serviceAvailabilityCheckedAt = 0L
@@ -663,6 +668,8 @@ object AutoVpnManager {
             googleAvailabilityConfirmationJob = null
             geminiAvailabilityConfirmationJob?.cancel()
             geminiAvailabilityConfirmationJob = null
+            siteAvailabilityConfirmationJobs.values.forEach { it.cancel() }
+            siteAvailabilityConfirmationJobs.clear()
             serviceAvailabilityProfileId = profileId
             serviceAvailabilityMode = safeMode
             serviceAvailabilityCheckedAt = System.currentTimeMillis()
@@ -675,7 +682,9 @@ object AutoVpnManager {
                         "auto-vpn-services",
                         "availability-check-start profile=$profileId mode=$safeMode force=$force",
                     )
-                    val results = ServiceAvailabilityProbe.checkAll(renderGeminiPage = safeMode == MODE_GEMINI)
+                    val geminiFilterEnabled = safeMode == MODE_GEMINI ||
+                            ServiceAvailabilityProbe.Service.GEMINI.name in DataStore.autoVpnSiteSwitchFilters
+                    val results = ServiceAvailabilityProbe.checkAll(renderGeminiPage = geminiFilterEnabled)
                     if (!isSameStartedAutoProfile(profileId, safeMode)) return@runOnDefaultDispatcher
                     val accepted = synchronized(serviceAvailabilityLock) {
                         if (serviceAvailabilityProfileId != profileId || serviceAvailabilityMode != safeMode) {
@@ -700,16 +709,22 @@ object AutoVpnManager {
                     )
                     notifyAutoStateChanged()
                     results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GOOGLE }
+                        ?.takeIf { isSiteSwitchFilterEnabled(it.service, safeMode) }
                         ?.takeIf {
                             it.state == ServiceAvailabilityProbe.State.UNAVAILABLE ||
                                     it.state == ServiceAvailabilityProbe.State.NO_RESPONSE
                         }
                         ?.let { scheduleGoogleAvailabilityConfirmation(profileId, safeMode, it) }
-                    if (safeMode == MODE_GEMINI) {
-                        results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GEMINI }
-                            ?.takeIf { it.isConfirmedGeminiFailure() }
-                            ?.let { scheduleGeminiAvailabilityConfirmation(profileId, safeMode, it) }
-                    }
+                    results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GEMINI }
+                        ?.takeIf { isSiteSwitchFilterEnabled(it.service, safeMode) }
+                        ?.takeIf { it.isConfirmedGeminiFailure() }
+                        ?.let { scheduleGeminiAvailabilityConfirmation(profileId, safeMode, it) }
+                    results.filter {
+                        it.service != ServiceAvailabilityProbe.Service.GOOGLE &&
+                                it.service != ServiceAvailabilityProbe.Service.GEMINI &&
+                                isSiteSwitchFilterEnabled(it.service, safeMode) &&
+                                it.isSiteUnavailableForSwitch()
+                    }.forEach { scheduleSiteAvailabilityConfirmation(profileId, safeMode, it) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -733,6 +748,83 @@ object AutoVpnManager {
 
     fun networkStatusText(): String = app.getString(networkStatusStringId)
 
+    private fun isSiteSwitchFilterEnabled(service: ServiceAvailabilityProbe.Service, mode: Int): Boolean =
+        service == ServiceAvailabilityProbe.Service.GEMINI && mode == MODE_GEMINI ||
+                service.name in DataStore.autoVpnSiteSwitchFilters
+
+    private fun ServiceAvailabilityProbe.Result.isSiteUnavailableForSwitch(): Boolean = when (state) {
+        ServiceAvailabilityProbe.State.AVAILABLE,
+        ServiceAvailabilityProbe.State.CHECKING,
+        ServiceAvailabilityProbe.State.NOT_CHECKED,
+        ServiceAvailabilityProbe.State.NO_TUNNEL_ROUTE -> false
+        else -> true
+    }
+
+    private fun scheduleSiteAvailabilityConfirmation(
+        profileId: Long,
+        mode: Int,
+        first: ServiceAvailabilityProbe.Result,
+    ) {
+        val service = first.service
+        synchronized(serviceAvailabilityLock) {
+            if (siteAvailabilityConfirmationJobs[service]?.isActive == true) return
+            siteAvailabilityConfirmationJobs[service] = runOnDefaultDispatcher {
+                try {
+                    delay(SERVICE_AVAILABILITY_CONFIRM_DELAY_MS)
+                    if (!isSameStartedAutoProfile(profileId, mode) || !isSiteSwitchFilterEnabled(service, mode)) {
+                        return@runOnDefaultDispatcher
+                    }
+                    val second = ServiceAvailabilityProbe.checkService(service)
+                    if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
+                    val accepted = synchronized(serviceAvailabilityLock) {
+                        if (serviceAvailabilityProfileId != profileId || serviceAvailabilityMode != mode) {
+                            false
+                        } else {
+                            serviceAvailabilityResults = serviceAvailabilityResults.map {
+                                if (it.service == service) second else it
+                            }
+                            serviceAvailabilityCheckedAt = System.currentTimeMillis()
+                            persistServiceAvailabilitySnapshotLocked()
+                            true
+                        }
+                    }
+                    if (!accepted) return@runOnDefaultDispatcher
+                    DiagnosticLog.event(
+                        "auto-vpn-services",
+                        "site-confirmation profile=$profileId mode=$mode service=${service.name} " +
+                                "first=${first.state}:http=${first.responseCode ?: "none"} " +
+                                "second=${second.state}:http=${second.responseCode ?: "none"}",
+                    )
+                    notifyAutoStateChanged()
+                    if (!second.isSiteUnavailableForSwitch()) return@runOnDefaultDispatcher
+                    if (!hasDirectInternet()) {
+                        deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
+                    } else if (isSiteSwitchFilterEnabled(service, mode)) {
+                        synchronized(serviceAvailabilityLock) {
+                            siteAvailabilityConfirmationJobs.remove(service)
+                        }
+                        confirmActiveProfileFailure(profileId, mode, "site-${service.name.lowercase()}-${second.state.name.lowercase()}")
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLog.error(
+                        "auto-vpn-services",
+                        "site-confirmation-failed profile=$profileId mode=$mode service=${service.name}",
+                        e,
+                    )
+                } finally {
+                    val currentJob = currentCoroutineContext()[Job]
+                    synchronized(serviceAvailabilityLock) {
+                        if (siteAvailabilityConfirmationJobs[service] === currentJob) {
+                            siteAvailabilityConfirmationJobs.remove(service)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun refreshServiceAvailabilityOnAppResume() {
         val profileId = DataStore.startedProfile
         val mode = sanitizeMode(DataStore.autoVpnMode)
@@ -750,7 +842,9 @@ object AutoVpnManager {
             googleAvailabilityConfirmationJob = runOnDefaultDispatcher {
                 try {
                     delay(SERVICE_AVAILABILITY_CONFIRM_DELAY_MS)
-                    if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
+                    if (!isSameStartedAutoProfile(profileId, mode) ||
+                        !isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GOOGLE, mode)
+                    ) return@runOnDefaultDispatcher
                     val second = ServiceAvailabilityProbe.checkGoogle()
                     if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
                     val accepted = synchronized(serviceAvailabilityLock) {
@@ -773,8 +867,10 @@ object AutoVpnManager {
                                 "second=${second.state}:http=${second.responseCode ?: "none"}",
                     )
                     notifyAutoStateChanged()
-                    if (second.state == ServiceAvailabilityProbe.State.UNAVAILABLE ||
+                    if (isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GOOGLE, mode) &&
+                        (second.state == ServiceAvailabilityProbe.State.UNAVAILABLE ||
                         second.state == ServiceAvailabilityProbe.State.NO_RESPONSE
+                        )
                     ) {
                         if (!hasDirectInternet()) {
                             synchronized(serviceAvailabilityLock) { googleAvailabilityConfirmationJob = null }
@@ -805,7 +901,8 @@ object AutoVpnManager {
             ServiceAvailabilityProbe.State.UNAVAILABLE,
             ServiceAvailabilityProbe.State.NO_RESPONSE,
             ServiceAvailabilityProbe.State.RESTRICTED,
-            ServiceAvailabilityProbe.State.CHALLENGE -> true
+            ServiceAvailabilityProbe.State.CHALLENGE,
+            ServiceAvailabilityProbe.State.FORBIDDEN -> true
             else -> false
         }
 
@@ -819,7 +916,9 @@ object AutoVpnManager {
             geminiAvailabilityConfirmationJob = runOnDefaultDispatcher {
                 try {
                     delay(SERVICE_AVAILABILITY_CONFIRM_DELAY_MS)
-                    if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
+                    if (!isSameStartedAutoProfile(profileId, mode) ||
+                        !isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GEMINI, mode)
+                    ) return@runOnDefaultDispatcher
                     val second = ServiceAvailabilityProbe.checkGemini(renderPage = true)
                     if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
                     val accepted = synchronized(serviceAvailabilityLock) {
@@ -842,7 +941,9 @@ object AutoVpnManager {
                                 "second=${second.state}:http=${second.responseCode ?: "none"}:location=${second.finalLocation.orEmpty()}",
                     )
                     notifyAutoStateChanged()
-                    if (second.isConfirmedGeminiFailure()) {
+                    if (isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GEMINI, mode) &&
+                        second.isConfirmedGeminiFailure()
+                    ) {
                         if (!hasDirectInternet()) {
                             synchronized(serviceAvailabilityLock) { geminiAvailabilityConfirmationJob = null }
                             deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)

@@ -186,6 +186,28 @@
         -->
     </string-array>
 
+    <string-array name="auto_vpn_site_switch_filter_entries">
+        <item>@string/auto_vpn_service_google</item>
+        <item>@string/auto_vpn_service_chatgpt</item>
+        <item>@string/auto_vpn_service_gemini</item>
+        <item>@string/auto_vpn_service_telegram</item>
+        <item>@string/auto_vpn_service_youtube</item>
+        <item>@string/auto_vpn_service_instagram</item>
+    </string-array>
+    <string-array name="auto_vpn_site_switch_filter_values">
+        <item>GOOGLE</item>
+        <item>CHATGPT</item>
+        <item>GEMINI</item>
+        <item>TELEGRAM</item>
+        <item>YOUTUBE</item>
+        <item>INSTAGRAM</item>
+    </string-array>
+    <string-array name="auto_vpn_site_switch_filter_default">
+        <item>GOOGLE</item>
+        <item>YOUTUBE</item>
+        <item>CHATGPT</item>
+    </string-array>
+
     <string-array name="route_protocol_entry">
         <item />
         <item>TCP</item>

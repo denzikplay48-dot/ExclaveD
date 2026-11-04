@@ -403,6 +403,9 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnScannedIdsGemini by configurationStore.string(Key.AUTO_VPN_SCANNED_IDS_GEMINI)
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
     var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
+    var autoVpnSiteSwitchFilters by configurationStore.stringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS) {
+        setOf("GOOGLE", "YOUTUBE", "CHATGPT")
+    }
     var autoVpnDirectSearchToken by configurationStore.long(Key.AUTO_VPN_DIRECT_SEARCH_TOKEN)
     var autoVpnDirectSearchHeartbeat by configurationStore.long(Key.AUTO_VPN_DIRECT_SEARCH_HEARTBEAT)
     var autoVpnFloatingSwitchEnabled by configurationStore.boolean(Key.AUTO_VPN_FLOATING_SWITCH_ENABLED)

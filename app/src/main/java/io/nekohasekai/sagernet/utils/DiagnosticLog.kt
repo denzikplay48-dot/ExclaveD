@@ -435,6 +435,7 @@ object DiagnosticLog {
     private val journalAreas = mapOf(
         "app" to "Приложение", "diagnostic" to "Диагностика", "auto-vpn" to "Авто-VPN",
         "profile-test" to "Проверка профилей", "service" to "VPN-служба",
+        "auto-vpn-services" to "Проверка доступности сайтов",
         "configuration-ui" to "Экран конфигураций", "ui" to "Интерфейс",
         "watchdog" to "Контроль зависания", "subscription" to "Подписки",
         "group-sync" to "Синхронизация групп", "update" to "Обновление", "crash" to "Сбой приложения",
@@ -462,6 +463,7 @@ object DiagnosticLog {
         "post-connect-attempt-result" to "Результат проверки после подключения",
         "post-connect-verification-finished" to "Проверка после подключения завершена",
         "post-connect-country-check-finished" to "Проверена страна выхода",
+        "gemini-rendered-probe" to "Проверка страницы Gemini",
         "active-monitor-start" to "Запущен контроль активного профиля",
         "active-monitor-tick" to "Плановая проверка активного профиля",
         "active-monitor-stop" to "Контроль активного профиля остановлен",

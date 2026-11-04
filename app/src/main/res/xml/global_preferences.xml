@@ -292,6 +292,14 @@
             app:key="autoVpnTrafficDownloadEnabled"
             app:summary="@string/auto_vpn_traffic_download_beta_sum"
             app:title="@string/auto_vpn_traffic_download_beta" />
+        <MultiSelectListPreference
+            app:defaultValue="@array/auto_vpn_site_switch_filter_default"
+            app:dialogTitle="@string/auto_vpn_site_switch_filter_title"
+            app:entries="@array/auto_vpn_site_switch_filter_entries"
+            app:entryValues="@array/auto_vpn_site_switch_filter_values"
+            app:key="autoVpnSiteSwitchFilters"
+            app:summary="@string/auto_vpn_site_switch_filter_summary"
+            app:title="@string/auto_vpn_site_switch_filter_title" />
         <EditTextPreference
             app:defaultValue="120"
             app:icon="@drawable/ic_baseline_timelapse_24"

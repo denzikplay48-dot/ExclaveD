@@ -34,6 +34,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
+import androidx.preference.MultiSelectListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.SwitchPreference
@@ -392,6 +393,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         val autoVpnPrecheck = findPreference<SwitchPreference>(Key.AUTO_VPN_PRECHECK_ENABLED)!!
         val autoVpnTrafficMonitor = findPreference<SwitchPreference>(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED)!!
         val autoVpnTrafficDownload = findPreference<SwitchPreference>(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED)!!
+        val autoVpnSiteSwitchFilters = findPreference<MultiSelectListPreference>(Key.AUTO_VPN_SITE_SWITCH_FILTERS)!!
         val autoVpnCheckInterval = findPreference<EditTextPreference>(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS)!!
         val autoVpnBadPing = findPreference<EditTextPreference>(Key.AUTO_VPN_BAD_PING_MILLIS)!!
         val autoVpnFailuresBeforeSwitch = findPreference<EditTextPreference>(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH)!!
@@ -462,6 +464,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
             autoVpnPrecheck,
             autoVpnTrafficMonitor,
             autoVpnTrafficDownload,
+            autoVpnSiteSwitchFilters,
             autoVpnCheckInterval,
             autoVpnBadPing,
             autoVpnFailuresBeforeSwitch,

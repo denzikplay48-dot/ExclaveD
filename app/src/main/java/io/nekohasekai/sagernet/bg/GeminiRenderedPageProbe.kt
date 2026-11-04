@@ -17,6 +17,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import io.nekohasekai.sagernet.R
 import io.nekohasekai.sagernet.SagerNet
+import io.nekohasekai.sagernet.utils.DiagnosticLog
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -60,6 +61,11 @@ internal object GeminiRenderedPageProbe {
             val code = mainFrameStatus ?: if (pageFinishedAt > 0L) HttpURLConnection.HTTP_OK else null
             val location = safeLocation(lastUrl)
             val elapsed = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "gemini-rendered-probe state=${state.name} http=${code ?: "none"} " +
+                        "url=${location.ifBlank { "unknown" }} elapsedMs=$elapsed",
+            )
             destroyWebView()
             if (continuation.isActive) {
                 continuation.resume(
