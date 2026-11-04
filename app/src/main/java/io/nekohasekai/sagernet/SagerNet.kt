@@ -106,6 +106,11 @@ class SagerNet : Application(),
         val isMainProcess = processName == BuildConfig.APPLICATION_ID
         DiagnosticLog.init(processName, isMainProcess)
 
+        if (isMainProcess) {
+            runCatching { BootReceiver.syncEnabled() }
+                .onFailure { DiagnosticLog.error("boot", "receiver-sync-failed", it) }
+        }
+
         if (!isMainProcess) {
             Libsagernetcore.setUidDumper(this, Build.VERSION.SDK_INT < Build.VERSION_CODES.Q)
             if (DataStore.enableDebug && DataStore.pprofServer.isNotEmpty()) {

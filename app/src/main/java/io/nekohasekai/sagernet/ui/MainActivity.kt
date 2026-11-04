@@ -105,6 +105,7 @@ class MainActivity : ThemedActivity(),
     private var appUpdateDownloader: AppUpdateDownloader? = null
     private var pendingUpdateInstall: File? = null
     private var waitingForInstallPermission = false
+    private var autoConnectRestoreAttempted = false
 
     val userInterface by lazy { GroupInterfaceAdapter(this) }
 
@@ -720,7 +721,7 @@ class MainActivity : ThemedActivity(),
     } catch (e: RemoteException) {
         DiagnosticLog.warn("ui", "service-connected-state-read-failed", e)
         BaseService.State.Idle
-    })
+    }).also { maybeRestoreAutoConnection("service-connected") }
 
     override fun onServiceDisconnected() {
         DiagnosticLog.critical("ui", "service-disconnected ${DiagnosticLog.stateSummary()}")
@@ -794,8 +795,25 @@ class MainActivity : ThemedActivity(),
         )
         scheduleInitialGroupSourceSyncPrompt()
         scheduleReleaseUpdateCheck()
+        maybeRestoreAutoConnection("main-activity-resume")
         AutoVpnManager.refreshNetworkStatus("main-activity-resume")
         AutoVpnManager.refreshServiceAvailabilityOnAppResume()
+    }
+
+    private fun maybeRestoreAutoConnection(source: String) {
+        if (autoConnectRestoreAttempted || !DataStore.persistAcrossReboot || DataStore.currentProfile <= 0L) return
+        if (state != BaseService.State.Stopped && state != BaseService.State.Idle) return
+        if (AutoVpnManager.isDirectSearchActive()) return
+
+        autoConnectRestoreAttempted = true
+        DiagnosticLog.critical(
+            "boot",
+            "app-fallback-start source=$source state=$state currentProfile=${DataStore.currentProfile} " +
+                    "selected=${DataStore.selectedProxy}"
+        )
+        binding.root.post {
+            if (!isFinishing && !isDestroyed) connect.launch(null)
+        }
     }
 
     private fun scheduleInitialGroupSourceSyncPrompt() {

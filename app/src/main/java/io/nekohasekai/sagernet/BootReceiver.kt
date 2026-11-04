@@ -28,6 +28,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.ktx.app
+import io.nekohasekai.sagernet.utils.DiagnosticLog
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -38,9 +39,20 @@ class BootReceiver : BroadcastReceiver() {
                 componentName, if (value) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                 else PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP
             )
+
+        fun syncEnabled() {
+            val shouldEnable = DataStore.persistAcrossReboot
+            if (enabled != shouldEnable) enabled = shouldEnable
+            DiagnosticLog.critical("boot", "receiver-enabled=$shouldEnable")
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        DiagnosticLog.critical(
+            "boot",
+            "received action=${intent.action.orEmpty()} autoConnect=${DataStore.persistAcrossReboot} " +
+                    "currentProfile=${DataStore.currentProfile} selected=${DataStore.selectedProxy}"
+        )
         if (!DataStore.persistAcrossReboot) {   // sanity check
             enabled = false
             return
@@ -48,6 +60,13 @@ class BootReceiver : BroadcastReceiver() {
 
         val doStart = DataStore.currentProfile > 0
 
-        if (doStart) SagerNet.startService()
+        if (!doStart) {
+            DiagnosticLog.critical("boot", "start-skipped: no previously active profile")
+            return
+        }
+
+        runCatching { SagerNet.startService() }
+            .onSuccess { DiagnosticLog.critical("boot", "service-start-requested") }
+            .onFailure { DiagnosticLog.error("boot", "service-start-failed", it) }
     }
 }
