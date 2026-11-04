@@ -3719,6 +3719,8 @@ object AutoVpnManager {
         }
     }
 
+    fun isDirectSearchActive(): Boolean = AutoVpnDirectSearchService.isSearchActive()
+
     private fun isVpnRunningForAuto(): Boolean {
         return SagerNet.started || DataStore.startedProfile > 0L
     }

@@ -40,6 +40,9 @@ import kotlinx.coroutines.isActive
 class AutoVpnDirectSearchService : Service() {
 
     companion object {
+        @Volatile
+        private var activeSearch = false
+
         private const val ACTION_CANDIDATE_SEARCH = "io.nekohasekai.sagernet.AUTO_DIRECT_CANDIDATE_SEARCH"
         private const val ACTION_STOP = "io.nekohasekai.sagernet.AUTO_DIRECT_STOP"
         private const val EXTRA_MODE = "mode"
@@ -50,6 +53,8 @@ class AutoVpnDirectSearchService : Service() {
         private const val STOP_TIMEOUT_MS = 15_000L
         private const val STOP_POLL_DELAY_MS = 100L
         private const val SETTLE_DELAY_MS = 2_000L
+
+        fun isSearchActive(): Boolean = activeSearch
 
         fun startCandidateSearch(context: Context, mode: Int, profileId: Long, reason: String): Boolean {
             return start(
@@ -132,6 +137,7 @@ class AutoVpnDirectSearchService : Service() {
         if (action == ACTION_STOP) {
             DiagnosticLog.critical("auto-vpn", "direct-search-service-stop-requested")
             AutoVpnManager.stopDetachedDirectSearch()
+            activeSearch = false
             searchJob?.cancel()
             stopSelf(startId)
             return START_NOT_STICKY
@@ -143,6 +149,7 @@ class AutoVpnDirectSearchService : Service() {
 
         startForeground(NOTIFICATION_ID, buildNotification())
         foregroundStarted = true
+        activeSearch = true
         val mode = intent.getIntExtra(EXTRA_MODE, AutoVpnManager.MODE_ANY)
         val profileId = intent.getLongExtra(EXTRA_PROFILE_ID, 0L)
         val reason = intent.getStringExtra(EXTRA_REASON).orEmpty()
@@ -167,6 +174,7 @@ class AutoVpnDirectSearchService : Service() {
                     )
                 }
             } finally {
+                activeSearch = false
                 DiagnosticLog.critical("auto-vpn", "direct-search-service-finish action=$action")
                 foregroundStarted = false
                 if (DataStore.startedProfile > 0L || DataStore.autoVpnServiceStartRequested) {
@@ -182,6 +190,7 @@ class AutoVpnDirectSearchService : Service() {
     }
 
     override fun onDestroy() {
+        activeSearch = false
         searchJob?.cancel()
         searchJob = null
         foregroundStarted = false
