@@ -287,7 +287,7 @@
             app:summary="@string/auto_vpn_traffic_monitor_beta_sum"
             app:title="@string/auto_vpn_traffic_monitor_beta" />
         <SwitchPreference
-            app:defaultValue="false"
+            app:defaultValue="true"
             app:icon="@drawable/ic_baseline_download_24"
             app:key="autoVpnTrafficDownloadEnabled"
             app:summary="@string/auto_vpn_traffic_download_beta_sum"

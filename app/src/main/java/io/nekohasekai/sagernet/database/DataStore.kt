@@ -128,6 +128,11 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
             configurationStore.putBoolean(Key.TUN_SYSTEM_DEFAULT_MIGRATION, true)
         }
+        if (configurationStore.getBoolean(Key.SYSTEM_DOWNLOAD_DEFAULTS_MIGRATION) != true) {
+            configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
+            configurationStore.putBoolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED, true)
+            configurationStore.putBoolean(Key.SYSTEM_DOWNLOAD_DEFAULTS_MIGRATION, true)
+        }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
         configurationStore.remove("autoVpnLastExitIpProfile")
@@ -362,7 +367,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnEnabled by configurationStore.boolean(Key.AUTO_VPN_ENABLED) { true }
     var autoVpnPrecheckEnabled by configurationStore.boolean(Key.AUTO_VPN_PRECHECK_ENABLED) { true }
     var autoVpnTrafficMonitorEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_MONITOR_ENABLED) { false }
-    var autoVpnTrafficDownloadEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED) { false }
+    var autoVpnTrafficDownloadEnabled by configurationStore.boolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED) { true }
     var autoVpnMode by configurationStore.int(Key.AUTO_VPN_MODE)
     var autoVpnCheckIntervalSeconds by configurationStore.stringToInt(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS) { 120 }
     var autoVpnBadPingMillis by configurationStore.stringToInt(Key.AUTO_VPN_BAD_PING_MILLIS) { 3000 }
