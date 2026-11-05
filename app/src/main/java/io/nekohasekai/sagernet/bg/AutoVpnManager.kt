@@ -1941,15 +1941,37 @@ object AutoVpnManager {
         val parallel = DataStore.connectionTestParallel.coerceAtLeast(1)
         val throttle = autoTestThrottle()
         val working = ArrayList<CandidateResult>()
-        var windowStartedAt = System.currentTimeMillis()
+        val selectionWindowMillis = initialSelectionWindowMillis()
+        val firstWorkingLock = Any()
+        var firstWorkingAt = 0L
+
+        fun noteFirstWorking(profileId: Long) {
+            synchronized(firstWorkingLock) {
+                if (firstWorkingAt == 0L) {
+                    firstWorkingAt = System.currentTimeMillis()
+                    DiagnosticLog.critical(
+                        "auto-vpn",
+                        "initial-selection-window-start mode=$safeMode profile=$profileId " +
+                                "timeoutMs=$selectionWindowMillis",
+                    )
+                }
+            }
+        }
+
+        fun selectionWindowExpired(): Boolean {
+            val startedAt = synchronized(firstWorkingLock) { firstWorkingAt }
+            return startedAt > 0L && System.currentTimeMillis() - startedAt >= selectionWindowMillis
+        }
+
         setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
 
         while (DataStore.autoVpnEnabled && DataStore.autoVpnMode == safeMode && working.size < target) {
-            if (System.currentTimeMillis() - windowStartedAt >= initialSelectionWindowMillis()) {
-                if (working.isNotEmpty()) {
-                    break
-                }
-                windowStartedAt = System.currentTimeMillis()
+            if (selectionWindowExpired()) {
+                DiagnosticLog.critical(
+                    "auto-vpn",
+                    "initial-selection-window-expired mode=$safeMode working=${working.size}/$target",
+                )
+                break
             }
 
             // Keep one stable ordering for the whole round. The delay sort changes as tests
@@ -1977,12 +1999,9 @@ object AutoVpnManager {
                         keepScanning = false
                         break@phaseLoop
                     }
-                    if (System.currentTimeMillis() - windowStartedAt >= initialSelectionWindowMillis()) {
-                        if (working.isNotEmpty()) {
-                            keepScanning = false
-                            break@phaseLoop
-                        }
-                        windowStartedAt = System.currentTimeMillis()
+                    if (selectionWindowExpired()) {
+                        keepScanning = false
+                        break@phaseLoop
                     }
 
                     val dynamicExcluded = excludedIds + currentProfileIds() + working.map { it.profile.id }
@@ -2000,6 +2019,10 @@ object AutoVpnManager {
                             keepScanning = false
                             break@phaseLoop
                         }
+                        if (selectionWindowExpired()) {
+                            keepScanning = false
+                            break@phaseLoop
+                        }
                         val testChunk = chunk.filter { markScanned(safeMode, it.id) }
                         if (countProgress) recordAutoSkippedResults(chunk.size - testChunk.size)
                         if (testChunk.isEmpty()) continue
@@ -2010,7 +2033,10 @@ object AutoVpnManager {
                                 safeMode,
                                 countProgress,
                                 throttle,
-                                onWorkingResult = { rememberWorkingResults(safeMode, listOf(it)) },
+                                onWorkingResult = {
+                                    noteFirstWorking(it.profile.id)
+                                    rememberWorkingResults(safeMode, listOf(it))
+                                },
                             ),
                             safeMode,
                         )
@@ -2023,9 +2049,15 @@ object AutoVpnManager {
                 }
             }
 
+            if (selectionWindowExpired()) {
+                DiagnosticLog.critical(
+                    "auto-vpn",
+                    "initial-selection-window-expired mode=$safeMode working=${working.size}/$target",
+                )
+                break
+            }
             if (!keepScanning || working.size >= target) break
             if (!restartAutoScanCycle(safeMode, scannedTotal, testedAnyInCycle)) break
-            if (working.isEmpty()) windowStartedAt = System.currentTimeMillis()
         }
 
         return sortCandidatesByScore(working, safeMode)
@@ -4609,11 +4641,11 @@ object AutoVpnManager {
             autoFinished = 0
             autoDisplayedFinished = 0
             autoWorking = retainedWorking.coerceAtLeast(0)
-            lastAutoProgressNotifyAt = System.currentTimeMillis()
+            lastAutoProgressNotifyAt = 0L
         }
         DiagnosticLog.event(
             "auto-vpn",
-            "progress-next-cycle mode=$safeMode total=$autoTotal retainedWorking=$retainedWorking"
+            "progress-next-cycle mode=$safeMode total=$autoTotal finished=0 retainedWorking=$retainedWorking"
         )
         persistAutoProgress(forceReset = true)
         notifyAutoStateChanged()
