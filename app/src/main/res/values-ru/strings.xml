@@ -691,6 +691,7 @@
     <string name="auto_vpn_status_initial_found">%1$s: найдено кандидатов %2$d/%3$d</string>
     <string name="auto_vpn_status_testing_more">%1$s: проверяю следующие профили...</string>
     <string name="auto_vpn_status_restart_scan">%1$s: запускаю следующий круг проверки...</string>
+    <string name="auto_vpn_status_updating_subscriptions">%1$s: обновляю подписки перед следующим кругом (%2$d/%3$d)</string>
     <string name="auto_vpn_status_rechecking_reserve">%1$s: перепроверяю запасные профили: %2$d</string>
     <string name="auto_vpn_status_verifying_connected">%1$s: проверка после подключения, попытка %2$d из %3$d...</string>
     <string name="auto_vpn_status_checking_active">%1$s: проверяю активный профиль...</string>
