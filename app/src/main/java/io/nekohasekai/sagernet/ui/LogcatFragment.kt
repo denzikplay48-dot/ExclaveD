@@ -45,6 +45,9 @@ import java.io.IOException
 import java.io.InputStreamReader
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
+import java.text.ParsePosition
+import java.text.SimpleDateFormat
+import java.util.Locale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -54,6 +57,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
 
     lateinit var binding: LayoutLogcatBinding
     private var streamJob: Job? = null
+    private var logcatAgeTrimJob: Job? = null
     @Volatile private var logcatProcess: Process? = null
     private var diagnosticJournalSelected = false
     private var viewAvailable = false
@@ -61,7 +65,12 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     companion object {
         private const val MAX_VISIBLE_LOG_LINES = 2_000
         private const val MAX_INITIAL_JOURNAL_BYTES = 1024 * 1024
+        private const val MAX_LOGCAT_AGE_MS = 10L * 60L * 1000L
+        private const val LOGCAT_AGE_TRIM_INTERVAL_MS = 30_000L
+        private val LOGCAT_TIMESTAMP_PREFIX = Regex("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} [+-]\\d{4}")
     }
+
+    private val logcatTimestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.US)
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -122,6 +131,8 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         streamJob = null
         job?.cancel()
         process?.destroy()
+        logcatAgeTrimJob?.cancel()
+        logcatAgeTrimJob = null
     }
 
     private fun appendLogUpdate(chunk: CharSequence) {
@@ -132,6 +143,10 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val wasAtBottom = scrollView.childCount == 0 ||
                 scrollView.getChildAt(0).bottom <= oldScrollY + scrollView.height + dp2px(24)
         val combined = SpannableStringBuilder(textView.text).append(chunk)
+        if (!diagnosticJournalSelected) {
+            val ageTrimOffset = logcatAgeTrimOffset(combined)
+            if (ageTrimOffset > 0) combined.delete(0, ageTrimOffset)
+        }
         val excessLines = combined.count { it == '\n' } - MAX_VISIBLE_LOG_LINES
         var trimOffset = 0
         if (excessLines > 0) {
@@ -159,11 +174,65 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         }
     }
 
+    private fun logcatAgeTrimOffset(text: CharSequence): Int {
+        val cutoff = System.currentTimeMillis() - MAX_LOGCAT_AGE_MS
+        var lineStart = 0
+        while (lineStart < text.length) {
+            var lineEnd = lineStart
+            while (lineEnd < text.length && text[lineEnd] != '\n') lineEnd++
+            val line = text.subSequence(lineStart, lineEnd).toString()
+            val timestamp = if (LOGCAT_TIMESTAMP_PREFIX.containsMatchIn(line)) {
+                logcatTimestampFormat.parse(line, ParsePosition(0))?.time
+            } else {
+                null
+            }
+            if (timestamp != null && timestamp >= cutoff) return lineStart
+            if (lineEnd == text.length) break
+            lineStart = lineEnd + 1
+        }
+        return text.length
+    }
+
+    private fun startLogcatAgeTrim() {
+        logcatAgeTrimJob?.cancel()
+        logcatAgeTrimJob = runOnDefaultDispatcher {
+            while (isActive && viewAvailable && !diagnosticJournalSelected) {
+                delay(LOGCAT_AGE_TRIM_INTERVAL_MS)
+                onMainDispatcher {
+                    if (viewAvailable && !diagnosticJournalSelected) trimVisibleLogcatByAge()
+                }
+            }
+        }
+    }
+
+    private fun trimVisibleLogcatByAge() {
+        val scrollView = binding.logsScrollView
+        val textView = binding.logsTextView
+        val oldScrollY = scrollView.scrollY
+        val wasAtBottom = scrollView.childCount == 0 ||
+                scrollView.getChildAt(0).bottom <= oldScrollY + scrollView.height + dp2px(24)
+        val trimmed = SpannableStringBuilder(textView.text)
+        val trimOffset = logcatAgeTrimOffset(trimmed)
+        if (trimOffset <= 0) return
+        trimmed.delete(0, trimOffset)
+        textView.text = trimmed
+        scrollView.post {
+            if (!viewAvailable || diagnosticJournalSelected) return@post
+            if (wasAtBottom) {
+                scrollView.fullScroll(View.FOCUS_DOWN)
+            } else {
+                val maxScroll = (scrollView.getChildAt(0).height - scrollView.height).coerceAtLeast(0)
+                scrollView.scrollTo(0, oldScrollY.coerceAtMost(maxScroll))
+            }
+        }
+    }
+
     private fun startLogcatStream() {
         stopLogStream()
         diagnosticJournalSelected = false
         updateJournalMenuTitle()
         binding.logsTextView.text = ""
+        startLogcatAgeTrim()
         streamJob = runOnIoDispatcher {
             try {
                 streamingLog()
@@ -192,7 +261,11 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
             ProcessBuilder(
                 listOf("logcat",
                     "-T", "2048",
-                    "-v", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) "tag,color" else "tag",
+                    "-v", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        "threadtime,year,zone,color"
+                    } else {
+                        "threadtime,year,zone"
+                    },
                     "-s", arrayOf(
                         "AndroidRuntime:D",
                         "ProxyInstance:D",

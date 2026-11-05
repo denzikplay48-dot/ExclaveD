@@ -239,11 +239,16 @@ internal object ServiceAvailabilityProbe {
             if (service == Service.GEMINI) {
                 DiagnosticLog.event(
                     "auto-vpn-services",
-                    "gemini-probe-result path=http http=none finalUrl=unknown state=NO_RESPONSE " +
+                    "gemini-probe-result path=http http=none finalUrl=unknown state=UNKNOWN " +
                             "reason=exception-${e.javaClass.simpleName} elapsedMs=${elapsedMillis(startedAt)}",
                 )
             }
-            Result(service, State.NO_RESPONSE, null, elapsedMillis(startedAt))
+            Result(
+                service,
+                if (service == Service.GEMINI) State.UNKNOWN else State.NO_RESPONSE,
+                null,
+                elapsedMillis(startedAt),
+            )
         } finally {
             connection?.disconnect()
         }
@@ -257,9 +262,10 @@ internal object ServiceAvailabilityProbe {
         val normalized = body.lowercase()
         return when {
             isGoogleSorry(url) -> GeminiClassification(State.CHALLENGE, "google-sorry-url")
+            code == HttpURLConnection.HTTP_FORBIDDEN -> GeminiClassification(State.FORBIDDEN, "http-403")
+            code == 429 -> GeminiClassification(State.CHALLENGE, "http-429")
             hasGoogleChallenge(normalized) -> GeminiClassification(State.CHALLENGE, "google-challenge-marker")
             hasRegionalRestriction(normalized) -> GeminiClassification(State.RESTRICTED, "regional-restriction-marker")
-            code == HttpURLConnection.HTTP_FORBIDDEN -> GeminiClassification(State.FORBIDDEN, "http-403")
             url.host.equals("gemini.google.com", ignoreCase = true) &&
                     url.path.trimEnd('/').let { it == "/app" || it.startsWith("/app/") } &&
                     code in 200..399 -> GeminiClassification(State.AVAILABLE, "gemini-app-route")
@@ -314,6 +320,10 @@ internal object ServiceAvailabilityProbe {
             "isn't supported in your country",
             "isn't currently supported in your country",
             "isn't available in your country",
+            "not supported in your region",
+            "not available in your region",
+            "isn't supported in your region",
+            "isn't available in your region",
             "не поддерживается в вашей стране",
             "недоступен в вашей стране",
             "недоступна в вашей стране",

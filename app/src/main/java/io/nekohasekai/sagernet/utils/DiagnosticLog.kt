@@ -655,6 +655,7 @@ object DiagnosticLog {
                     rawValue == "google-challenge-marker" -> "обнаружен признак проверки Google"
                     rawValue == "regional-restriction-marker" -> "обнаружен признак регионального ограничения"
                     rawValue == "gemini-app-route" -> "открыт адрес приложения Gemini"
+                    rawValue == "http-429" -> "ответ HTTP 429"
                     rawValue == "server-error" -> "ошибка сервера"
                     rawValue == "no-known-gemini-marker" -> "нет известного признака доступности или блокировки"
                     rawValue == "probe-cancelled" -> "проверка отменена"

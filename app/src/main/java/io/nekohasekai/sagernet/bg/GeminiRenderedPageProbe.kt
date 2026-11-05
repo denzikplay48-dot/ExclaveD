@@ -30,7 +30,19 @@ internal object GeminiRenderedPageProbe {
     private const val LOAD_TIMEOUT_MS = 15_000L
     private const val DOM_SETTLE_TIMEOUT_MS = 5_000L
     private const val DOM_POLL_INTERVAL_MS = 500L
-    private const val MAX_TEXT_LENGTH = 4_096
+    private const val DOM_MARKER_SCRIPT = """(function(){
+        var text=(document.body&&document.body.innerText||'').toLowerCase();
+        var region=['not supported in your country','not currently supported in your country',
+            'not available in your country','not yet available in your country',
+            "isn't supported in your country","isn't currently supported in your country",
+            "isn't available in your country",'not supported in your region',
+            'not available in your region','не поддерживается в вашей стране',
+            'недоступен в вашей стране','недоступна в вашей стране'];
+        var challenge=['unusual traffic','automated queries','our systems have detected','not a robot'];
+        return JSON.stringify({url:location.href,
+            region:region.some(function(marker){return text.indexOf(marker)>=0;}),
+            challenge:challenge.some(function(marker){return text.indexOf(marker)>=0;})});
+    })()"""
 
     suspend fun check(): ServiceAvailabilityProbe.Result = suspendCancellableCoroutine { continuation ->
         val handler = Handler(Looper.getMainLooper())
@@ -38,7 +50,10 @@ internal object GeminiRenderedPageProbe {
         var webView: WebView? = null
         var lastUrl = PAGE_URL
         var mainFrameStatus: Int? = null
+        var pageCommittedAt = 0L
         var pageFinishedAt = 0L
+        var domStartedAt = 0L
+        var domSnapshotRead = false
         var completed = false
 
         DiagnosticLog.event(
@@ -49,10 +64,12 @@ internal object GeminiRenderedPageProbe {
 
         lateinit var pollDom: Runnable
         lateinit var timeout: Runnable
+        lateinit var domSettleTimeout: Runnable
 
         fun destroyWebView() {
             handler.removeCallbacks(pollDom)
             handler.removeCallbacks(timeout)
+            handler.removeCallbacks(domSettleTimeout)
             webView?.let { view ->
                 webView = null
                 runCatching { (view.parent as? ViewGroup)?.removeView(view) }
@@ -64,7 +81,11 @@ internal object GeminiRenderedPageProbe {
         fun finish(state: ServiceAvailabilityProbe.State, reason: String) {
             if (completed) return
             completed = true
-            val code = mainFrameStatus ?: if (pageFinishedAt > 0L) HttpURLConnection.HTTP_OK else null
+            val code = mainFrameStatus ?: if (pageCommittedAt > 0L || pageFinishedAt > 0L) {
+                HttpURLConnection.HTTP_OK
+            } else {
+                null
+            }
             val location = safeLocation(lastUrl)
             val elapsed = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
             DiagnosticLog.event(
@@ -87,39 +108,57 @@ internal object GeminiRenderedPageProbe {
             }
         }
 
+        fun classify(url: String, code: Int, markers: String = "") = runCatching {
+            ServiceAvailabilityProbe.classifyGeminiResponseDetailed(URL(url), code, markers)
+        }.getOrElse {
+            ServiceAvailabilityProbe.GeminiClassification(
+                ServiceAvailabilityProbe.State.UNKNOWN,
+                "classification-exception",
+            )
+        }
+
+        fun isConclusive(state: ServiceAvailabilityProbe.State): Boolean = when (state) {
+            ServiceAvailabilityProbe.State.AVAILABLE,
+            ServiceAvailabilityProbe.State.UNAVAILABLE,
+            ServiceAvailabilityProbe.State.RESTRICTED,
+            ServiceAvailabilityProbe.State.CHALLENGE,
+            ServiceAvailabilityProbe.State.FORBIDDEN -> true
+            else -> false
+        }
+
+        fun effectiveCode(): Int = mainFrameStatus ?: if (pageCommittedAt > 0L || pageFinishedAt > 0L) {
+            HttpURLConnection.HTTP_OK
+        } else {
+            0
+        }
+
+        fun startDomInspection() {
+            if (domStartedAt == 0L) domStartedAt = SystemClock.elapsedRealtime()
+            handler.removeCallbacks(pollDom)
+            handler.post(pollDom)
+        }
+
+        fun scheduleDomSettleTimeout() {
+            handler.removeCallbacks(domSettleTimeout)
+            handler.postDelayed(domSettleTimeout, DOM_SETTLE_TIMEOUT_MS)
+        }
+
         fun inspectDom(rawValue: String?) {
             if (completed) return
             val encoded = runCatching { JSONArray().put(rawValue).getString(0) }.getOrNull()
             val snapshot = encoded?.let { runCatching { JSONObject(it) }.getOrNull() }
             if (snapshot != null) {
+                domSnapshotRead = true
                 lastUrl = snapshot.optString("url", lastUrl)
-                val text = snapshot.optString("text").take(MAX_TEXT_LENGTH)
-                val effectiveCode = mainFrameStatus ?: HttpURLConnection.HTTP_OK
-                val classification = runCatching {
-                    ServiceAvailabilityProbe.classifyGeminiResponseDetailed(URL(lastUrl), effectiveCode, text)
-                }.getOrDefault(
-                    ServiceAvailabilityProbe.GeminiClassification(
-                        ServiceAvailabilityProbe.State.UNKNOWN,
-                        "classification-exception",
-                    ),
-                )
-                val state = classification.state
-                if (state == ServiceAvailabilityProbe.State.AVAILABLE ||
-                    state == ServiceAvailabilityProbe.State.RESTRICTED ||
-                    state == ServiceAvailabilityProbe.State.CHALLENGE
-                ) {
-                    finish(state, classification.reason)
+                val markerText = buildString {
+                    if (snapshot.optBoolean("region")) append("not supported in your country ")
+                    if (snapshot.optBoolean("challenge")) append("unusual traffic ")
+                }
+                val classification = classify(lastUrl, effectiveCode(), markerText)
+                if (isConclusive(classification.state)) {
+                    finish(classification.state, classification.reason)
                     return
                 }
-                if (pageFinishedAt > 0L && SystemClock.elapsedRealtime() - pageFinishedAt >= DOM_SETTLE_TIMEOUT_MS) {
-                    finish(state, "dom-settled-${classification.reason}")
-                    return
-                }
-            } else if (pageFinishedAt > 0L &&
-                SystemClock.elapsedRealtime() - pageFinishedAt >= DOM_SETTLE_TIMEOUT_MS
-            ) {
-                finish(ServiceAvailabilityProbe.State.UNKNOWN, "dom-result-unavailable")
-                return
             }
             handler.postDelayed(pollDom, DOM_POLL_INTERVAL_MS)
         }
@@ -128,29 +167,40 @@ internal object GeminiRenderedPageProbe {
             if (completed) return@Runnable
             val view = webView ?: return@Runnable
             runCatching {
-                view.evaluateJavascript(
-                    "JSON.stringify({url:location.href,text:(document.body&&document.body.innerText||'').slice(0,$MAX_TEXT_LENGTH)})",
-                    { value -> inspectDom(value) },
-                )
+                view.evaluateJavascript(DOM_MARKER_SCRIPT) { value -> inspectDom(value) }
             }.onFailure {
-                if (pageFinishedAt > 0L) inspectDom(null)
+                if (domStartedAt == 0L) startDomInspection()
+            }
+        }
+
+        domSettleTimeout = Runnable {
+            if (completed) return@Runnable
+            val classification = classify(lastUrl, effectiveCode())
+            if (isConclusive(classification.state)) {
+                finish(classification.state, classification.reason)
+            } else {
+                finish(
+                    ServiceAvailabilityProbe.State.UNKNOWN,
+                    if (domSnapshotRead) classification.reason else "dom-result-unavailable",
+                )
             }
         }
 
         timeout = Runnable {
             if (completed) return@Runnable
-            finish(
-                if (mainFrameStatus == HttpURLConnection.HTTP_FORBIDDEN) {
-                    ServiceAvailabilityProbe.State.FORBIDDEN
-                } else {
-                    ServiceAvailabilityProbe.State.NO_RESPONSE
-                },
-                if (mainFrameStatus == HttpURLConnection.HTTP_FORBIDDEN) {
-                    "http-403-load-timeout"
-                } else {
-                    "page-load-timeout"
-                },
-            )
+            val classification = classify(lastUrl, effectiveCode())
+            if (isConclusive(classification.state)) {
+                finish(classification.state, classification.reason)
+            } else {
+                finish(
+                    ServiceAvailabilityProbe.State.UNKNOWN,
+                    if (!domSnapshotRead && (pageCommittedAt > 0L || pageFinishedAt > 0L)) {
+                        "dom-result-unavailable"
+                    } else {
+                        "page-load-timeout"
+                    },
+                )
+            }
         }
 
         continuation.invokeOnCancellation {
@@ -192,13 +242,37 @@ internal object GeminiRenderedPageProbe {
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                     lastUrl = url
                     mainFrameStatus = null
+                    pageCommittedAt = 0L
+                    pageFinishedAt = 0L
+                    domStartedAt = 0L
+                    domSnapshotRead = false
+                    handler.removeCallbacks(pollDom)
+                    handler.removeCallbacks(domSettleTimeout)
+                    val classification = classify(url, 0)
+                    if (isConclusive(classification.state)) finish(classification.state, classification.reason)
+                }
+
+                override fun onPageCommitVisible(view: WebView, url: String) {
+                    lastUrl = url
+                    pageCommittedAt = SystemClock.elapsedRealtime()
+                    val classification = classify(url, effectiveCode())
+                    if (isConclusive(classification.state)) {
+                        finish(classification.state, classification.reason)
+                    } else {
+                        startDomInspection()
+                    }
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
                     lastUrl = url
                     if (pageFinishedAt == 0L) pageFinishedAt = SystemClock.elapsedRealtime()
-                    handler.removeCallbacks(pollDom)
-                    handler.post(pollDom)
+                    scheduleDomSettleTimeout()
+                    val classification = classify(url, effectiveCode())
+                    if (isConclusive(classification.state)) {
+                        finish(classification.state, classification.reason)
+                    } else {
+                        startDomInspection()
+                    }
                 }
 
                 override fun onReceivedHttpError(
@@ -209,6 +283,10 @@ internal object GeminiRenderedPageProbe {
                     if (request.isForMainFrame) {
                         lastUrl = request.url.toString()
                         mainFrameStatus = errorResponse.statusCode
+                        val classification = classify(lastUrl, errorResponse.statusCode)
+                        if (isConclusive(classification.state)) {
+                            finish(classification.state, classification.reason)
+                        }
                     }
                 }
 
@@ -218,7 +296,7 @@ internal object GeminiRenderedPageProbe {
                     error: WebResourceError,
                 ) {
                     if (request.isForMainFrame) {
-                        finish(ServiceAvailabilityProbe.State.NO_RESPONSE, "main-frame-error-${error.errorCode}")
+                        finish(ServiceAvailabilityProbe.State.UNKNOWN, "main-frame-error-${error.errorCode}")
                     }
                 }
 

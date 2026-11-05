@@ -21,6 +21,7 @@ import io.nekohasekai.sagernet.Action
 import io.nekohasekai.sagernet.GroupOrder
 import io.nekohasekai.sagernet.Key
 import io.nekohasekai.sagernet.R
+import io.nekohasekai.sagernet.RouteMode
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.aidl.TrafficStats
 import io.nekohasekai.sagernet.TunImplementation
@@ -656,6 +657,20 @@ object AutoVpnManager {
                                 },
                     )
                     notifyAutoStateChanged()
+                    if (areAllSitesUnresponsive(results)) {
+                        val directInternetAvailable = hasDirectInternet()
+                        if (!isSameStartedAutoProfile(profileId, safeMode)) return@runOnDefaultDispatcher
+                        DiagnosticLog.critical(
+                            "auto-vpn-services",
+                            "all-sites-unresponsive profile=$profileId mode=$safeMode directInternet=$directInternetAvailable",
+                        )
+                        if (directInternetAvailable) {
+                            confirmActiveProfileFailure(profileId, safeMode, "all-sites-unresponsive")
+                        } else {
+                            deferForMissingDirectNetwork(profileId, safeMode, trafficTriggered = false)
+                        }
+                        return@runOnDefaultDispatcher
+                    }
                     results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GOOGLE }
                         ?.takeIf { isSiteSwitchFilterEnabled(it.service, safeMode) }
                         ?.takeIf {
@@ -665,7 +680,7 @@ object AutoVpnManager {
                         ?.let { scheduleGoogleAvailabilityConfirmation(profileId, safeMode, it) }
                     results.firstOrNull { it.service == ServiceAvailabilityProbe.Service.GEMINI }
                         ?.takeIf { isSiteSwitchFilterEnabled(it.service, safeMode) }
-                        ?.takeIf { it.isConfirmedGeminiFailure() }
+                        ?.takeIf { it.requiresGeminiConfirmation() }
                         ?.let { scheduleGeminiAvailabilityConfirmation(profileId, safeMode, it) }
                     results.filter {
                         it.service != ServiceAvailabilityProbe.Service.GOOGLE &&
@@ -695,6 +710,15 @@ object AutoVpnManager {
     }
 
     fun networkStatusText(): String = app.getString(networkStatusStringId)
+
+    private fun areAllSitesUnresponsive(results: List<ServiceAvailabilityProbe.Result>): Boolean {
+        return results.size == ServiceAvailabilityProbe.Service.values().size && results.all {
+            it.responseCode == null && it.state in setOf(
+                ServiceAvailabilityProbe.State.NO_RESPONSE,
+                ServiceAvailabilityProbe.State.UNKNOWN,
+            )
+        }
+    }
 
     private fun isSiteSwitchFilterEnabled(service: ServiceAvailabilityProbe.Service, mode: Int): Boolean =
         service == ServiceAvailabilityProbe.Service.GEMINI && mode == MODE_GEMINI ||
@@ -847,10 +871,24 @@ object AutoVpnManager {
     private fun ServiceAvailabilityProbe.Result.isConfirmedGeminiFailure(): Boolean =
         service == ServiceAvailabilityProbe.Service.GEMINI && when (state) {
             ServiceAvailabilityProbe.State.UNAVAILABLE,
-            ServiceAvailabilityProbe.State.NO_RESPONSE,
             ServiceAvailabilityProbe.State.RESTRICTED,
             ServiceAvailabilityProbe.State.CHALLENGE,
             ServiceAvailabilityProbe.State.FORBIDDEN -> true
+            else -> false
+        }
+
+    private fun ServiceAvailabilityProbe.Result.requiresGeminiConfirmation(): Boolean =
+        service == ServiceAvailabilityProbe.Service.GEMINI && when (state) {
+            ServiceAvailabilityProbe.State.UNKNOWN,
+            ServiceAvailabilityProbe.State.NO_RESPONSE -> true
+            else -> isConfirmedGeminiFailure()
+        }
+
+    private fun ServiceAvailabilityProbe.Result.isInconclusiveGeminiResult(): Boolean =
+        service == ServiceAvailabilityProbe.Service.GEMINI && when (state) {
+            ServiceAvailabilityProbe.State.UNKNOWN,
+            ServiceAvailabilityProbe.State.NO_RESPONSE,
+            ServiceAvailabilityProbe.State.NO_TUNNEL_ROUTE -> true
             else -> false
         }
 
@@ -867,14 +905,21 @@ object AutoVpnManager {
                     if (!isSameStartedAutoProfile(profileId, mode) ||
                         !isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GEMINI, mode)
                     ) return@runOnDefaultDispatcher
-                    val second = ServiceAvailabilityProbe.checkGemini(renderPage = true)
+                    val secondProbe = ServiceAvailabilityProbe.checkGemini(renderPage = true)
+                    val selectedResult = if (
+                        secondProbe.isInconclusiveGeminiResult() && first.isConfirmedGeminiFailure()
+                    ) {
+                        first
+                    } else {
+                        secondProbe
+                    }
                     if (!isSameStartedAutoProfile(profileId, mode)) return@runOnDefaultDispatcher
                     val accepted = synchronized(serviceAvailabilityLock) {
                         if (serviceAvailabilityProfileId != profileId || serviceAvailabilityMode != mode) {
                             false
                         } else {
                             serviceAvailabilityResults = serviceAvailabilityResults.map {
-                                if (it.service == ServiceAvailabilityProbe.Service.GEMINI) second else it
+                                if (it.service == ServiceAvailabilityProbe.Service.GEMINI) selectedResult else it
                             }
                             serviceAvailabilityCheckedAt = System.currentTimeMillis()
                             persistServiceAvailabilitySnapshotLocked()
@@ -886,18 +931,19 @@ object AutoVpnManager {
                         "auto-vpn-services",
                         "gemini-confirmation profile=$profileId mode=$mode " +
                                 "first=${first.state}:http=${first.responseCode ?: "none"}:location=${first.finalLocation.orEmpty()} " +
-                                "second=${second.state}:http=${second.responseCode ?: "none"}:location=${second.finalLocation.orEmpty()}",
+                                "second=${secondProbe.state}:http=${secondProbe.responseCode ?: "none"}:location=${secondProbe.finalLocation.orEmpty()} " +
+                                "selected=${selectedResult.state}",
                     )
                     notifyAutoStateChanged()
                     if (isSiteSwitchFilterEnabled(ServiceAvailabilityProbe.Service.GEMINI, mode) &&
-                        second.isConfirmedGeminiFailure()
+                        selectedResult.isConfirmedGeminiFailure()
                     ) {
                         if (!hasDirectInternet()) {
                             synchronized(serviceAvailabilityLock) { geminiAvailabilityConfirmationJob = null }
                             deferForMissingDirectNetwork(profileId, mode, trafficTriggered = false)
                         } else {
                             synchronized(serviceAvailabilityLock) { geminiAvailabilityConfirmationJob = null }
-                            confirmActiveProfileFailure(profileId, mode, "gemini-${second.state.name.lowercase()}")
+                            confirmActiveProfileFailure(profileId, mode, "gemini-${selectedResult.state.name.lowercase()}")
                         }
                     }
                 } catch (e: CancellationException) {
@@ -928,6 +974,10 @@ object AutoVpnManager {
                     googleReachable -> R.string.auto_vpn_network_partial
                     else -> R.string.auto_vpn_network_unavailable
                 }
+                when (networkStatusStringId) {
+                    R.string.auto_vpn_network_normal -> updateRussianDomainRule(enabled = true, trigger)
+                    R.string.auto_vpn_network_whitelist -> updateRussianDomainRule(enabled = false, trigger)
+                }
                 DiagnosticLog.event(
                     "auto-vpn",
                     "network-status trigger=$trigger route=underlying google=$googleReachable yandex=$yandexReachable " +
@@ -935,6 +985,26 @@ object AutoVpnManager {
                 )
                 notifyAutoStateChanged()
             }
+        }
+    }
+
+    private suspend fun updateRussianDomainRule(enabled: Boolean, trigger: String) {
+        val russianDomains = setOf("geosite:category-ru", "geosite:tld-ru")
+        val rule = SagerDatabase.rulesDao.allRules().firstOrNull { candidate ->
+            candidate.outbound == -1L && candidate.ip.isBlank() &&
+                    candidate.domains.lineSequence().map { it.trim().lowercase(Locale.ROOT) }
+                        .toSet().containsAll(russianDomains)
+        } ?: return
+        if (rule.enabled == enabled) return
+
+        rule.enabled = enabled
+        SagerDatabase.rulesDao.updateRule(rule)
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "ru-domain-route-updated enabled=$enabled trigger=$trigger routeMode=${DataStore.routeMode}",
+        )
+        if (DataStore.routeMode == RouteMode.RULE && SagerNet.started) {
+            onMainDispatcher { SagerNet.reloadService() }
         }
     }
 
@@ -1217,7 +1287,6 @@ object AutoVpnManager {
                     return@runOnDefaultDispatcher
                 }
 
-                clearAutoQuarantineState()
                 resetAutoCandidateResults(groupIds)
                 resetAutoProgress(SagerDatabase.proxyDao.countByGroups(groupIds).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                 setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
@@ -1361,7 +1430,6 @@ object AutoVpnManager {
 
             if (resetResults) {
                 resetAutoSearchState(cancelScan = false)
-                clearAutoQuarantineState()
                 resetAutoCandidateResults(groupIds)
             }
 
@@ -1485,7 +1553,6 @@ object AutoVpnManager {
             switchMutex.withLock {
                 val safeMode = sanitizeMode(DataStore.autoVpnMode)
                 DataStore.autoVpnMode = safeMode
-                failedUntil.clear()
                 manualCycleIds.getOrPut(safeMode) { LinkedHashSet() }.clear()
                 val working = prepareWorkingPool(safeMode)
                 if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode) return@withLock
@@ -3658,7 +3725,6 @@ object AutoVpnManager {
     }
 
     private fun clearExitCountryTransientExclusions() {
-        failedUntil.clear()
         workingCache.clear()
         listOf(MODE_NON_RU, MODE_GEMINI).forEach { mode ->
             manualCycleIds.remove(mode)
@@ -4373,7 +4439,20 @@ object AutoVpnManager {
                     "completedProgress=$completedProgressCycle " +
                     "progress=$autoFinished/$autoTotal working=$autoWorking"
         )
-        failedUntil.clear()
+        val heldProfileIds = (currentProfileIds() + reserveProfileIds(safeMode))
+            .filterNot { isMarkedFailed(it) }
+            .toSet()
+        val remainingProfiles = autoScanProfiles(enabledGroupIds())
+            .filter { profileAllowed(it, safeMode) && it.id !in heldProfileIds }
+        val allRemainingQuarantined = remainingProfiles.isNotEmpty() &&
+                remainingProfiles.all { isMarkedFailed(it.id) }
+        if (allRemainingQuarantined) {
+            failedUntil.clear()
+            DiagnosticLog.critical(
+                "auto-vpn",
+                "quarantine-reset-all-eligible-profiles mode=$safeMode profiles=${remainingProfiles.size}",
+            )
+        }
         synchronized(scannedIds) {
             scannedIds.remove(safeMode)
         }
@@ -4404,7 +4483,6 @@ object AutoVpnManager {
             autoScanJob?.cancel()
             autoScanJob = null
         }
-        failedUntil.clear()
         workingCache.clear()
         synchronized(workingPools) {
             workingPools.clear()
@@ -4427,10 +4505,6 @@ object AutoVpnManager {
             SagerDatabase.proxyDao.clearTestResultsByGroups(it)
         }
         markAutoTestResultsReset()
-    }
-
-    private fun clearAutoQuarantineState() {
-        failedUntil.clear()
     }
 
     private fun automaticExcludedIds(mode: Int, extraIds: Collection<Long>): Set<Long> {
@@ -4478,7 +4552,6 @@ object AutoVpnManager {
                 total > 0 &&
                 stored.finished >= total
         if (completedStoredCycle) {
-            failedUntil.clear()
             synchronized(scannedIds) {
                 scannedIds.remove(safeMode)
             }
