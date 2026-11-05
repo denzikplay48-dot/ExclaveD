@@ -3008,8 +3008,8 @@ object AutoVpnManager {
         val secondSlow = recordTrafficSpeedSample(profileId, second)
         logActiveTrafficProbe(profileId, mode, source, 2, second, secondSlow)
         return when {
-            second.hasTraffic -> second
-            first.hasTraffic -> first
+            second.download.complete -> second
+            first.download.complete -> first
             else -> null
         }
     }
