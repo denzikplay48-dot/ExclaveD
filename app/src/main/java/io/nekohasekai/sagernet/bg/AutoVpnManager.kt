@@ -1557,15 +1557,12 @@ object AutoVpnManager {
                     countProgress = true,
                 )
             } else {
-                scanWorkingProfiles(
+                scanInitialWorkingProfiles(
                     groupIds = groupIds,
                     excludedIds = excludedIds,
                     mode = safeMode,
                     target = reserveTarget(),
                     countProgress = true,
-                    connectFirst = false,
-                    startIfStopped = true,
-                    feedback = true,
                 )
             }
             val best = chooseBestCandidate(working)
@@ -2116,11 +2113,10 @@ object AutoVpnManager {
             var testedAnyInCycle = false
             var keepScanning = true
 
-            phaseLoop@ for ((phaseIndex, phaseProfiles) in listOf(scanPhases.vip, scanPhases.regular).withIndex()) {
-                val vipPhase = phaseIndex == 0
+            phaseLoop@ for (phaseProfiles in listOf(scanPhases.vip, scanPhases.regular)) {
                 if (phaseProfiles.isEmpty()) continue
                 if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
-                    (!vipPhase && working.size >= target)
+                    working.size >= target
                 ) {
                     keepScanning = false
                     break@phaseLoop
@@ -2128,7 +2124,7 @@ object AutoVpnManager {
 
                 for (page in phaseProfiles.chunked(AUTO_SCAN_PAGE_SIZE)) {
                     if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
-                        (!vipPhase && working.size >= target)
+                        working.size >= target
                     ) {
                         keepScanning = false
                         break@phaseLoop
@@ -2148,7 +2144,7 @@ object AutoVpnManager {
 
                     for (chunk in candidates.chunked(parallel)) {
                         if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
-                            (!vipPhase && working.size >= target)
+                            working.size >= target
                         ) {
                             keepScanning = false
                             break@phaseLoop
@@ -3499,15 +3495,12 @@ object AutoVpnManager {
         setAutoStatus(safeMode, R.string.auto_vpn_status_testing_more)
 
         try {
-            val working = scanWorkingProfiles(
+            val working = scanInitialWorkingProfiles(
                 groupIds = groupIds,
                 excludedIds = excludedIds,
                 mode = safeMode,
                 target = reserveTarget(),
                 countProgress = trackProgress,
-                connectFirst = false,
-                startIfStopped = false,
-                feedback = false,
             )
             return chooseBestCandidate(working)
         } finally {
