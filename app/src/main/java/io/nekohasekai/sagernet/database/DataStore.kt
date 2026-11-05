@@ -128,6 +128,10 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
             configurationStore.putBoolean(Key.TUN_SYSTEM_DEFAULT_MIGRATION, true)
         }
+        if (configurationStore.getBoolean(Key.TUN_SYSTEM_STABLE_RELEASE_MIGRATION) != true) {
+            configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
+            configurationStore.putBoolean(Key.TUN_SYSTEM_STABLE_RELEASE_MIGRATION, true)
+        }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
         configurationStore.remove("autoVpnLastExitIpProfile")

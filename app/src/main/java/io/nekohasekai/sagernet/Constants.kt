@@ -193,6 +193,7 @@ object Key {
 
     const val TUN_IMPLEMENTATION = "tunImplementation"
     const val TUN_SYSTEM_DEFAULT_MIGRATION = "tunSystemDefaultMigration"
+    const val TUN_SYSTEM_STABLE_RELEASE_MIGRATION = "tunSystemStableReleaseMigration"
     const val ENABLE_PCAP = "enablePcap"
     const val MTU = "mtu"
     const val DISCARD_ICMP = "discardICMP"
