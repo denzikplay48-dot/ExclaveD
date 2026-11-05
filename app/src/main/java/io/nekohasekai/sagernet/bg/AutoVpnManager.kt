@@ -28,6 +28,7 @@ import io.nekohasekai.sagernet.TunImplementation
 import io.nekohasekai.sagernet.aidl.TrafficStats
 import io.nekohasekai.sagernet.bg.test.V2RayTestInstance
 import io.nekohasekai.sagernet.database.DataStore
+import io.nekohasekai.sagernet.database.GroupManager
 import io.nekohasekai.sagernet.database.ProfileManager
 import io.nekohasekai.sagernet.database.ProxyEntity
 import io.nekohasekai.sagernet.database.ProxyListItem
@@ -1354,7 +1355,7 @@ object AutoVpnManager {
                     return@runOnDefaultDispatcher
                 }
 
-                resetAutoCandidateResults(groupIds)
+                resetAutoCandidateResults(groupIds, safeMode)
                 resetAutoProgress(SagerDatabase.proxyDao.countByGroups(groupIds).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                 setAutoStatus(safeMode, R.string.auto_vpn_status_initial_search)
                 DiagnosticLog.critical(
@@ -1500,7 +1501,7 @@ object AutoVpnManager {
 
             if (resetResults) {
                 resetAutoSearchState(cancelScan = false)
-                resetAutoCandidateResults(groupIds)
+                resetAutoCandidateResults(groupIds, safeMode)
             }
 
             val excludedIds = automaticExcludedIds(
@@ -2046,7 +2047,7 @@ object AutoVpnManager {
         val groupIds = enabledGroupIds()
         if (groupIds.isEmpty()) return emptyList()
 
-        resetAutoCandidateResults(groupIds)
+        resetAutoCandidateResults(groupIds, mode)
         resetAutoProgress(SagerDatabase.proxyDao.countByGroups(groupIds).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         val working = scanWorkingProfiles(
             groupIds = groupIds,
@@ -5013,10 +5014,57 @@ object AutoVpnManager {
                     "completedProgress=$completedProgressCycle " +
                     "storedScanned=${scannedCount(safeMode)} progress=$autoFinished/$autoTotal working=$autoWorking"
         )
+
+        AutoProfileScoreStore.flush()
+        val subscriptions = SagerDatabase.groupDao.subscriptions()
+        if (subscriptions.isNotEmpty()) {
+            setAutoStatus(
+                safeMode,
+                R.string.auto_vpn_status_updating_subscriptions,
+                0,
+                subscriptions.size,
+            )
+            try {
+                val summary = SubscriptionUpdater.updateGroups(
+                    subscriptions,
+                    byUser = false,
+                    forceUpdateWhenDisconnected = true,
+                    onProgress = { progress ->
+                        setAutoStatus(
+                            safeMode,
+                            R.string.auto_vpn_status_updating_subscriptions,
+                            progress.done,
+                            progress.total,
+                        )
+                    },
+                    waitForExistingUpdate = true,
+                )
+                if (DataStore.subscriptionAutoSortGroups) {
+                    GroupManager.sortGroupsByTotalProfiles()
+                }
+                DiagnosticLog.critical(
+                    "auto-vpn",
+                    "cycle-subscription-update-finished mode=$safeMode total=${summary.total} " +
+                            "success=${summary.success} errors=${summary.errors} skipped=${summary.skipped}",
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLog.error("auto-vpn", "cycle-subscription-update-failed mode=$safeMode", e)
+                Logs.w(e)
+            }
+        } else {
+            DiagnosticLog.event("auto-vpn", "cycle-subscription-update-skipped mode=$safeMode reason=no-subscriptions")
+        }
+
+        if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode) return false
+
+        val nextProfiles = autoScanProfiles(enabledGroupIds())
+        val nextTotal = nextProfiles.size
         val heldProfileIds = (currentProfileIds() + reserveProfileIds(safeMode))
             .filterNot { isMarkedFailed(it) }
             .toSet()
-        val remainingProfiles = autoScanProfiles(enabledGroupIds())
+        val remainingProfiles = nextProfiles
             .filter { profileAllowed(it, safeMode) && it.id !in heldProfileIds }
         val allRemainingQuarantined = remainingProfiles.isNotEmpty() &&
                 remainingProfiles.all { isMarkedFailed(it.id) }
@@ -5032,7 +5080,7 @@ object AutoVpnManager {
         }
         clearStoredScannedIds(safeMode)
         persistReserveCount(safeMode)
-        resetAutoProgressForNextCycle(safeMode, scannedTotal)
+        resetAutoProgressForNextCycle(safeMode, nextTotal)
         setAutoStatus(safeMode, R.string.auto_vpn_status_restart_scan)
         delay(AUTO_SCAN_NEXT_CYCLE_DELAY_MS)
         return true
@@ -5074,13 +5122,25 @@ object AutoVpnManager {
         clearAutoProgress()
     }
 
-    private fun resetAutoCandidateResults(groupIds: List<Long>) {
+    private fun resetAutoCandidateResults(groupIds: List<Long>, mode: Int) {
         ProfileTestRunner.syncFromStore()
-        if (ProfileTestRunner.isRunning()) return
+        if (ProfileTestRunner.isRunning()) {
+            DiagnosticLog.event(
+                "auto-vpn",
+                "candidate-results-reset-skipped mode=${sanitizeMode(mode)} reason=manual-test-active " +
+                        "vip-score-store=retained",
+            )
+            return
+        }
         groupIds.chunked(500).forEach {
             SagerDatabase.proxyDao.clearTestResultsByGroups(it)
         }
         markAutoTestResultsReset()
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "candidate-results-cleared mode=${sanitizeMode(mode)} groups=${groupIds.size} " +
+                    "vip-score-store=retained",
+        )
     }
 
     private fun automaticExcludedIds(mode: Int, extraIds: Collection<Long>): Set<Long> {

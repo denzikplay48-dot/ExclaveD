@@ -147,9 +147,12 @@ object SubscriptionUpdater {
         byUser: Boolean = false,
         forceUpdateWhenDisconnected: Boolean = false,
         onGroupStart: suspend (ProxyGroup) -> Unit = {},
-        onProgress: suspend (UpdateSummary) -> Unit = {}
+        onProgress: suspend (UpdateSummary) -> Unit = {},
+        waitForExistingUpdate: Boolean = false,
     ): UpdateSummary = coroutineScope {
-        if (!updateMutex.tryLock()) {
+        if (waitForExistingUpdate) {
+            updateMutex.lock()
+        } else if (!updateMutex.tryLock()) {
             return@coroutineScope UpdateSummary(
                 total = groups.size,
                 done = groups.size,
