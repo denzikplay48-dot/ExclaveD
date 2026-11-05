@@ -192,6 +192,7 @@ object Key {
     const val INTERRUPT_REUSED_CONNECTIONS = "interruptReusedConnections0"
 
     const val TUN_IMPLEMENTATION = "tunImplementation"
+    const val TUN_SYSTEM_DEFAULT_MIGRATION = "tunSystemDefaultMigration"
     const val ENABLE_PCAP = "enablePcap"
     const val MTU = "mtu"
     const val DISCARD_ICMP = "discardICMP"

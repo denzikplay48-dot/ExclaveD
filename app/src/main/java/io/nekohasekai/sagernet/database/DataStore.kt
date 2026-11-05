@@ -124,6 +124,10 @@ object DataStore : OnPreferenceDataStoreChangeListener {
 
     fun init() {
         configurationStore.registerChangeListener(this)
+        if (configurationStore.getBoolean(Key.TUN_SYSTEM_DEFAULT_MIGRATION) != true) {
+            configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
+            configurationStore.putBoolean(Key.TUN_SYSTEM_DEFAULT_MIGRATION, true)
+        }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
         configurationStore.remove("autoVpnLastExitIpProfile")
@@ -473,7 +477,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
         disabledGroups = ids
     }
 
-    var tunImplementation by configurationStore.stringToInt(Key.TUN_IMPLEMENTATION) { TunImplementation.GVISOR }
+    var tunImplementation by configurationStore.stringToInt(Key.TUN_IMPLEMENTATION) { TunImplementation.SYSTEM }
 
     var mtu by configurationStore.stringToInt(Key.MTU) { VpnService.DEFAULT_MTU }
 
