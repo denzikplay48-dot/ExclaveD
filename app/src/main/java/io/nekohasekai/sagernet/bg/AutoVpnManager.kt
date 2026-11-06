@@ -235,6 +235,8 @@ object AutoVpnManager {
     private val exitCountryCheckMutex = Mutex()
     private val exitCountryConfirmationLock = Any()
     private val failedUntil = ConcurrentHashMap<Long, Long>()
+    private val quarantineLock = Any()
+    private var lastQuarantineRevision = Long.MIN_VALUE
     private val workingCache = ConcurrentHashMap<Long, CachedWorking>()
     private val activeTrafficSpeedBaselines = mutableMapOf<Long, Long>()
     private val activeTrafficSpeedLock = Any()
@@ -1616,6 +1618,7 @@ object AutoVpnManager {
         urlTester: (() -> Int)? = null,
         trafficSampler: (suspend () -> TrafficStats?)? = null,
     ) {
+        refreshQuarantineState()
         refreshNetworkStatus("vpn-start-or-profile-switch")
         if (!DataStore.autoVpnEnabled) {
             FloatingSwitchButton.hide()
@@ -1939,6 +1942,7 @@ object AutoVpnManager {
         countProgress: Boolean,
     ): List<CandidateResult> {
         val safeMode = sanitizeMode(mode)
+        refreshQuarantineState(force = true)
         val parallel = DataStore.connectionTestParallel.coerceAtLeast(1)
         val throttle = autoTestThrottle()
         val working = ArrayList<CandidateResult>()
@@ -1993,6 +1997,7 @@ object AutoVpnManager {
                 }
 
                 for (page in phaseProfiles.chunked(AUTO_SCAN_PAGE_SIZE)) {
+                    refreshQuarantineState()
                     if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
                         working.size >= target
                     ) {
@@ -2075,6 +2080,7 @@ object AutoVpnManager {
         scanAllAvailable: Boolean = false,
     ): List<CandidateResult> {
         val safeMode = sanitizeMode(mode)
+        refreshQuarantineState(force = true)
         val parallel = DataStore.connectionTestParallel.coerceAtLeast(1)
         val throttle = autoTestThrottle()
         val working = ArrayList<CandidateResult>()
@@ -2102,6 +2108,7 @@ object AutoVpnManager {
                 }
 
                 for (page in phaseProfiles.chunked(AUTO_SCAN_PAGE_SIZE)) {
+                    refreshQuarantineState()
                     if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode ||
                         (!vipPhase && !scanAllAvailable && reserveCount(safeMode) >= target)
                     ) {
@@ -3260,6 +3267,7 @@ object AutoVpnManager {
         mode: Int,
     ): CandidateResult? {
         val safeMode = sanitizeMode(mode)
+        refreshQuarantineState(force = true)
         if (!pauseVpnForDirectTests("candidate-search")) return null
         val groupIds = enabledGroupIds()
         if (groupIds.isEmpty()) return null
@@ -3364,7 +3372,52 @@ object AutoVpnManager {
 
     private fun recordProfileFailure(profile: ProxyEntity, quarantine: Boolean) {
         if (quarantine) {
-            failedUntil[profile.id] = System.currentTimeMillis() + quarantineMillis()
+            quarantineProfile(profile.id)
+        }
+    }
+
+    private fun refreshQuarantineState(force: Boolean = false) {
+        synchronized(quarantineLock) {
+            val now = System.currentTimeMillis()
+            val revision = DataStore.autoVpnQuarantineRevision
+            if (!force && revision == lastQuarantineRevision) return
+            failedUntil.clear()
+            DataStore.autoVpnQuarantineEntries().forEach { (profileId, until) ->
+                if (until > now) failedUntil[profileId] = until
+            }
+            lastQuarantineRevision = revision
+        }
+    }
+
+    private fun quarantineProfile(profileId: Long) {
+        if (profileId <= 0L) return
+        synchronized(quarantineLock) {
+            val now = System.currentTimeMillis()
+            val until = now + quarantineMillis()
+            failedUntil[profileId] = until
+            lastQuarantineRevision = DataStore.setAutoVpnQuarantineUntil(profileId, until)
+        }
+    }
+
+    private fun removeQuarantinedProfiles(profileIds: Collection<Long>) {
+        if (profileIds.none { failedUntil.containsKey(it) }) return
+        synchronized(quarantineLock) {
+            val removed = ArrayList<Long>()
+            profileIds.forEach { profileId ->
+                if (failedUntil.remove(profileId) != null) {
+                    removed += profileId
+                }
+            }
+            if (removed.isNotEmpty()) {
+                lastQuarantineRevision = DataStore.removeAutoVpnQuarantineProfiles(removed)
+            }
+        }
+    }
+
+    private fun clearQuarantine() {
+        synchronized(quarantineLock) {
+            failedUntil.clear()
+            lastQuarantineRevision = DataStore.clearAutoVpnQuarantine()
         }
     }
 
@@ -3373,7 +3426,7 @@ object AutoVpnManager {
         SagerDatabase.proxyDao.getById(profileId)?.let {
             AutoProfileScoreStore.recordManualSwitch(it, mode)
         }
-        failedUntil[profileId] = System.currentTimeMillis() + quarantineMillis()
+        quarantineProfile(profileId)
         if (sanitizeMode(mode) == MODE_GEMINI) {
             rememberGeminiRejectedProfiles(listOf(profileId))
         }
@@ -3381,6 +3434,7 @@ object AutoVpnManager {
 
     private fun rememberWorkingResults(mode: Int, results: List<CandidateResult>) {
         if (results.isEmpty()) return
+        removeQuarantinedProfiles(results.map { it.profile.id })
         val safeMode = sanitizeMode(mode)
         val now = System.currentTimeMillis()
         results.forEach {
@@ -4118,15 +4172,14 @@ object AutoVpnManager {
         if (profileId <= 0L) return
         val profile = SagerDatabase.proxyDao.getById(profileId)
         if (profile != null && countFailure) recordProfileFailure(profile, quarantine = true)
-        else failedUntil[profileId] = System.currentTimeMillis() + quarantineMillis()
+        else quarantineProfile(profileId)
     }
 
     private fun isMarkedFailed(profileId: Long): Boolean {
-        val now = System.currentTimeMillis()
-        val until = failedUntil[profileId]
-        if (until != null) {
-            if (until > now) return true
-            failedUntil.remove(profileId)
+        synchronized(quarantineLock) {
+            val until = failedUntil[profileId] ?: return false
+            if (until > System.currentTimeMillis()) return true
+            failedUntil.remove(profileId, until)
         }
         return false
     }
@@ -4206,17 +4259,13 @@ object AutoVpnManager {
     }
 
     private fun quarantineCount(mode: Int = DataStore.autoVpnMode): Int {
-        val now = System.currentTimeMillis()
-        var count = 0
-        failedUntil.keys.forEach { profileId ->
-            val until = failedUntil[profileId]
-            if (until != null && until <= now) {
-                failedUntil.remove(profileId)
-            } else if (until != null) {
-                count += 1
-            }
+        refreshQuarantineState(force = true)
+        synchronized(quarantineLock) {
+            val now = System.currentTimeMillis()
+            val expired = failedUntil.filterValues { it <= now }.keys
+            expired.forEach { failedUntil.remove(it) }
+            return failedUntil.size
         }
-        return count
     }
 
     private fun reserveProfileIds(mode: Int = DataStore.autoVpnMode): List<Long> {
@@ -4461,6 +4510,7 @@ object AutoVpnManager {
 
     private suspend fun restartAutoScanCycle(mode: Int, scannedTotal: Int, testedAnyInCycle: Boolean): Boolean {
         val safeMode = sanitizeMode(mode)
+        refreshQuarantineState(force = true)
         val completedProgressCycle = synchronized(progressLock) {
             autoTotal == scannedTotal && autoFinished >= autoTotal
         }
@@ -4526,7 +4576,7 @@ object AutoVpnManager {
         val allRemainingQuarantined = remainingProfiles.isNotEmpty() &&
                 remainingProfiles.all { isMarkedFailed(it.id) }
         if (allRemainingQuarantined) {
-            failedUntil.clear()
+            clearQuarantine()
             DiagnosticLog.critical(
                 "auto-vpn",
                 "quarantine-reset-all-eligible-profiles mode=$safeMode profiles=${remainingProfiles.size}",

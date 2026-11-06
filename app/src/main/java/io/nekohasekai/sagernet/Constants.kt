@@ -111,6 +111,8 @@ object Key {
     const val AUTO_VPN_LITE_MODE = "autoVpnLiteMode"
     const val AUTO_VPN_SWITCH_COOLDOWN_SECONDS = "autoVpnSwitchCooldownSeconds"
     const val AUTO_VPN_QUARANTINE_MINUTES = "autoVpnQuarantineMinutes"
+    const val AUTO_VPN_QUARANTINE_PROFILE_PREFIX = "autoVpnQuarantineProfile:"
+    const val AUTO_VPN_QUARANTINE_REVISION = "autoVpnQuarantineRevision"
     const val AUTO_VPN_GEMINI_REJECTED_KEYS = "autoVpnGeminiRejectedKeys"
     const val AUTO_VPN_EXIT_COUNTRY_REJECTED_KEYS = "autoVpnExitCountryRejectedKeys"
     const val AUTO_VPN_EXIT_COUNTRY_REJECTED_REVISION = "autoVpnExitCountryRejectedRevision"

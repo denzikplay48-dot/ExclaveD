@@ -61,11 +61,17 @@ class KeyValuePair() : Parcelable {
         @Query("SELECT * FROM `KeyValuePair` WHERE `key` = :key")
         operator fun get(key: String): KeyValuePair?
 
+        @Query("SELECT * FROM `KeyValuePair` WHERE `key` LIKE :pattern")
+        fun byKeyPattern(pattern: String): List<KeyValuePair>
+
         @Insert(onConflict = OnConflictStrategy.REPLACE)
         fun put(value: KeyValuePair): Long
 
         @Query("DELETE FROM `KeyValuePair` WHERE `key` = :key")
         fun delete(key: String): Int
+
+        @Query("DELETE FROM `KeyValuePair` WHERE `key` LIKE :pattern")
+        fun deleteByKeyPattern(pattern: String): Int
 
         @Query("DELETE FROM `KeyValuePair`")
         fun reset(): Int
