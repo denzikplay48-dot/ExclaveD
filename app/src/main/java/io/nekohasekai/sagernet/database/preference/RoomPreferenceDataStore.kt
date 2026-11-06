@@ -33,6 +33,7 @@ open class RoomPreferenceDataStore(private val kvPairDao: KeyValuePair.Dao) :
     fun getLong(key: String) = kvPairDao[key]?.long
     fun getString(key: String) = kvPairDao[key]?.string
     fun getStringSet(key: String) = kvPairDao[key]?.stringSet
+    fun getByKeyPrefix(prefix: String) = kvPairDao.byKeyPattern("$prefix%")
     fun reset() = kvPairDao.reset()
 
     override fun getBoolean(key: String, defValue: Boolean) = getBoolean(key) ?: defValue
@@ -87,6 +88,11 @@ open class RoomPreferenceDataStore(private val kvPairDao: KeyValuePair.Dao) :
     fun remove(key: String) {
         kvPairDao.delete(key)
         fireChangeListener(key)
+    }
+
+    fun removeByKeyPrefix(prefix: String) {
+        kvPairDao.deleteByKeyPattern("$prefix%")
+        fireChangeListener(prefix)
     }
 
     private val listeners = HashSet<OnPreferenceDataStoreChangeListener>()

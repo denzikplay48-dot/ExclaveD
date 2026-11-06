@@ -382,6 +382,39 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnLiteMode by configurationStore.boolean(Key.AUTO_VPN_LITE_MODE) { true }
     var autoVpnSwitchCooldownSeconds by configurationStore.stringToInt(Key.AUTO_VPN_SWITCH_COOLDOWN_SECONDS) { 0 }
     var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 45 }
+    var autoVpnQuarantineRevision by configurationStore.long(Key.AUTO_VPN_QUARANTINE_REVISION)
+    fun autoVpnQuarantineEntries(): Map<Long, Long> {
+        val prefix = Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX
+        return configurationStore.getByKeyPrefix(prefix).mapNotNull { entry ->
+            val profileId = entry.key.removePrefix(prefix).toLongOrNull() ?: return@mapNotNull null
+            val until = entry.long ?: return@mapNotNull null
+            if (profileId > 0L && until > 0L) profileId to until else null
+        }.toMap()
+    }
+
+    fun setAutoVpnQuarantineUntil(profileId: Long, until: Long): Long {
+        if (profileId <= 0L) return autoVpnQuarantineRevision
+        val key = Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX + profileId
+        if (until > 0L) configurationStore.putLong(key, until) else configurationStore.remove(key)
+        return updateAutoVpnQuarantineRevision()
+    }
+
+    fun removeAutoVpnQuarantineProfiles(profileIds: Collection<Long>): Long {
+        profileIds.filter { it > 0L }.forEach { profileId ->
+            configurationStore.remove(Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX + profileId)
+        }
+        return updateAutoVpnQuarantineRevision()
+    }
+
+    fun clearAutoVpnQuarantine(): Long {
+        configurationStore.removeByKeyPrefix(Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX)
+        return updateAutoVpnQuarantineRevision()
+    }
+
+    private fun updateAutoVpnQuarantineRevision(): Long {
+        autoVpnQuarantineRevision = maxOf(System.nanoTime(), autoVpnQuarantineRevision + 1L)
+        return autoVpnQuarantineRevision
+    }
     var autoVpnGeminiRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_GEMINI_REJECTED_KEYS)
     var autoVpnGeminiRejectedNames by configurationStore.string(Key.AUTO_VPN_GEMINI_REJECTED_NAMES)
     var autoVpnGeminiRejectedRevision by configurationStore.long(Key.AUTO_VPN_GEMINI_REJECTED_REVISION)
