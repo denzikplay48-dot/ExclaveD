@@ -133,6 +133,24 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             configurationStore.putBoolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED, true)
             configurationStore.putBoolean(Key.SYSTEM_DOWNLOAD_DEFAULTS_MIGRATION, true)
         }
+        if (configurationStore.getBoolean(Key.AUTO_VPN_TELEGRAM_FILTER_DEFAULT_MIGRATION) != true) {
+            val previousDefault = setOf("GOOGLE", "YOUTUBE", "CHATGPT")
+            val savedFilters = configurationStore.getStringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS)
+            if (savedFilters == null || savedFilters == previousDefault) {
+                configurationStore.putStringSet(
+                    Key.AUTO_VPN_SITE_SWITCH_FILTERS,
+                    (previousDefault + "TELEGRAM").toMutableSet(),
+                )
+            }
+            configurationStore.putBoolean(Key.AUTO_VPN_TELEGRAM_FILTER_DEFAULT_MIGRATION, true)
+        }
+        if (configurationStore.getBoolean(Key.AUTO_VPN_SINGLE_FAILURE_DEFAULT_MIGRATION) != true) {
+            val savedThreshold = configurationStore.getString(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH)?.toIntOrNull()
+            if (savedThreshold == null || savedThreshold == 2) {
+                configurationStore.putString(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH, "1")
+            }
+            configurationStore.putBoolean(Key.AUTO_VPN_SINGLE_FAILURE_DEFAULT_MIGRATION, true)
+        }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
         configurationStore.remove("autoVpnLastExitIpProfile")
@@ -371,7 +389,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnMode by configurationStore.int(Key.AUTO_VPN_MODE)
     var autoVpnCheckIntervalSeconds by configurationStore.stringToInt(Key.AUTO_VPN_CHECK_INTERVAL_SECONDS) { 120 }
     var autoVpnBadPingMillis by configurationStore.stringToInt(Key.AUTO_VPN_BAD_PING_MILLIS) { 3000 }
-    var autoVpnFailuresBeforeSwitch by configurationStore.stringToInt(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH) { 2 }
+    var autoVpnFailuresBeforeSwitch by configurationStore.stringToInt(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH) { 1 }
     var autoVpnCandidateLimit by configurationStore.stringToInt(Key.AUTO_VPN_CANDIDATE_LIMIT) { 40 }
     var autoVpnWorkingTarget by configurationStore.stringToInt(Key.AUTO_VPN_WORKING_TARGET) { 5 }
     var autoVpnInitialSelectionTimeoutSeconds by configurationStore.stringToInt(Key.AUTO_VPN_INITIAL_SELECTION_TIMEOUT_SECONDS) { 60 }
@@ -441,7 +459,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
     var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
     var autoVpnSiteSwitchFilters by configurationStore.stringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS) {
-        setOf("GOOGLE", "YOUTUBE", "CHATGPT")
+        setOf("GOOGLE", "YOUTUBE", "CHATGPT", "TELEGRAM")
     }
     var autoVpnFloatingSwitchEnabled by configurationStore.boolean(Key.AUTO_VPN_FLOATING_SWITCH_ENABLED)
     var autoVpnFloatingSwitchX by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_X) { -1 }

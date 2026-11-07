@@ -313,7 +313,7 @@
             app:title="@string/auto_vpn_bad_ping_millis"
             app:useSimpleSummaryProvider="true" />
         <EditTextPreference
-            app:defaultValue="2"
+            app:defaultValue="1"
             app:icon="@drawable/ic_baseline_timelapse_24"
             app:key="autoVpnFailuresBeforeSwitch"
             app:title="@string/auto_vpn_failures_before_switch"

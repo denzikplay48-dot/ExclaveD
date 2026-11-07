@@ -16,7 +16,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -30,12 +29,12 @@ internal object ServiceAvailabilityProbe {
     private const val CONNECT_TIMEOUT_MS = 4_000
     private const val READ_TIMEOUT_MS = 4_000
     private const val MAX_GEMINI_BODY_BYTES = 64 * 1024
-    private const val RETRY_DELAY_MS = 1_000L
 
     enum class State {
         NOT_CHECKED,
         CHECKING,
         AVAILABLE,
+        PAGE_REACHABLE,
         UNAVAILABLE,
         NO_RESPONSE,
         RESTRICTED,
@@ -109,18 +108,7 @@ internal object ServiceAvailabilityProbe {
                             checkOnce(service, proxy)
                         }
                     }
-                    if (useRenderedGemini) {
-                        return@withPermit first
-                    }
-                    if (first.state != State.NO_RESPONSE) return@withPermit first
-                    if (proxy == null) return@withPermit first
-                    delay(RETRY_DELAY_MS)
-                    val second = checkOnce(service, proxy)
-                    if (second.state == State.NO_RESPONSE) {
-                        second.copy(elapsedMillis = first.elapsedMillis + RETRY_DELAY_MS + second.elapsedMillis)
-                    } else {
-                        second
-                    }
+                    first
                 }
             }
         }.awaitAll()
@@ -151,15 +139,7 @@ internal object ServiceAvailabilityProbe {
     suspend fun checkService(service: Service): Result {
         val proxy = activeProfileProxy()
             ?: return Result(service, State.NO_TUNNEL_ROUTE, null, 0L)
-        val first = checkOnce(service, proxy)
-        if (first.state != State.NO_RESPONSE) return first
-        delay(RETRY_DELAY_MS)
-        val second = checkOnce(service, proxy)
-        return if (second.state == State.NO_RESPONSE) {
-            second.copy(elapsedMillis = first.elapsedMillis + RETRY_DELAY_MS + second.elapsedMillis)
-        } else {
-            second
-        }
+        return checkOnce(service, proxy)
     }
 
     suspend fun checkGemini(renderPage: Boolean = false): Result {
@@ -239,13 +219,13 @@ internal object ServiceAvailabilityProbe {
             if (service == Service.GEMINI) {
                 DiagnosticLog.event(
                     "auto-vpn-services",
-                    "gemini-probe-result path=http http=none finalUrl=unknown state=UNKNOWN " +
+                    "gemini-probe-result path=http http=none finalUrl=unknown state=NO_RESPONSE " +
                             "reason=exception-${e.javaClass.simpleName} elapsedMs=${elapsedMillis(startedAt)}",
                 )
             }
             Result(
                 service,
-                if (service == Service.GEMINI) State.UNKNOWN else State.NO_RESPONSE,
+                State.NO_RESPONSE,
                 null,
                 elapsedMillis(startedAt),
             )
@@ -259,20 +239,32 @@ internal object ServiceAvailabilityProbe {
     }
 
     internal fun classifyGeminiResponseDetailed(url: URL, code: Int, body: String): GeminiClassification {
-        val normalized = body.lowercase()
+        val normalized = visibleHtmlText(body).replace(WHITESPACE, " ").lowercase()
         return when {
             isGoogleSorry(url) -> GeminiClassification(State.CHALLENGE, "google-sorry-url")
-            code == HttpURLConnection.HTTP_FORBIDDEN -> GeminiClassification(State.FORBIDDEN, "http-403")
             code == 429 -> GeminiClassification(State.CHALLENGE, "http-429")
             hasGoogleChallenge(normalized) -> GeminiClassification(State.CHALLENGE, "google-challenge-marker")
             hasRegionalRestriction(normalized) -> GeminiClassification(State.RESTRICTED, "regional-restriction-marker")
-            url.host.equals("gemini.google.com", ignoreCase = true) &&
-                    url.path.trimEnd('/').let { it == "/app" || it.startsWith("/app/") } &&
-                    code in 200..399 -> GeminiClassification(State.AVAILABLE, "gemini-app-route")
+            code == HttpURLConnection.HTTP_FORBIDDEN -> GeminiClassification(State.FORBIDDEN, "http-403")
             code >= 500 -> GeminiClassification(State.UNAVAILABLE, "server-error")
+            code in 400..499 -> GeminiClassification(State.UNAVAILABLE, "http-client-error")
+            url.host.equals("gemini.google.com", ignoreCase = true) && code in 200..399 ->
+                GeminiClassification(State.PAGE_REACHABLE, "gemini-page-reachable-unverified")
+            url.host.equals("accounts.google.com", ignoreCase = true) && code in 200..399 ->
+                GeminiClassification(State.PAGE_REACHABLE, "google-login-page-unverified")
             else -> GeminiClassification(State.UNKNOWN, "no-known-gemini-marker")
         }
     }
+
+    private fun visibleHtmlText(body: String): String = body
+        .replace(SCRIPT_BLOCK, " ")
+        .replace(STYLE_BLOCK, " ")
+        .replace(HTML_COMMENT, " ")
+        .replace(HTML_TAG, " ")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 
     private fun readResponseBody(connection: HttpURLConnection, code: Int): String = runCatching {
         val stream = if (code >= HttpURLConnection.HTTP_BAD_REQUEST) {
@@ -306,6 +298,10 @@ internal object ServiceAvailabilityProbe {
             "automated queries",
             "our systems have detected",
             "not a robot",
+            "мы зарегистрировали подозрительный трафик",
+            "подозрительный трафик, исходящий из вашей сети",
+            "автоматические запросы",
+            "подтвердите, что вы не робот",
         ).any { marker -> normalized.contains(marker) }
     }
 
@@ -332,4 +328,10 @@ internal object ServiceAvailabilityProbe {
 
     private fun elapsedMillis(startedAtNanos: Long): Long =
         ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+
+    private val SCRIPT_BLOCK = Regex("""(?is)<script\b[^>]*>.*?</script\s*>""")
+    private val STYLE_BLOCK = Regex("""(?is)<style\b[^>]*>.*?</style\s*>""")
+    private val HTML_COMMENT = Regex("""(?s)<!--.*?-->""")
+    private val HTML_TAG = Regex("""(?s)<[^>]*>""")
+    private val WHITESPACE = Regex("\\s+")
 }
