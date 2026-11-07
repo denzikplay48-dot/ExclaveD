@@ -24,12 +24,15 @@ import android.net.NetworkCapabilities
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.nekohasekai.sagernet.Key
 import io.nekohasekai.sagernet.SagerNet
+import io.nekohasekai.sagernet.TunImplementation
 import io.nekohasekai.sagernet.bg.GuardedProcessPool
 import io.nekohasekai.sagernet.bg.ActiveVpnTrafficProbe
 import io.nekohasekai.sagernet.bg.ExitIpGeoChecker
 import io.nekohasekai.sagernet.bg.LocalResolver
 import io.nekohasekai.sagernet.bg.proto.V2RayInstance
+import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.database.ProxyEntity
 import io.nekohasekai.sagernet.fmt.buildV2RayConfig
 import io.nekohasekai.sagernet.ktx.Logs
@@ -37,9 +40,11 @@ import io.nekohasekai.sagernet.ktx.mkPort
 import io.nekohasekai.sagernet.utils.DefaultNetworkListener
 import io.nekohasekai.sagernet.utils.DiagnosticLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import libsagernetcore.Libsagernetcore
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -97,6 +102,8 @@ class V2RayTestInstance(
 ), LocalResolver {
     companion object {
         private const val ROUTE_DIAGNOSTIC_INTERVAL_MS = 30_000L
+        private const val DIRECT_NETWORK_WAIT_TIMEOUT_MS = 5_000L
+        private const val DIRECT_NETWORK_POLL_INTERVAL_MS = 100L
         private val lastRouteDiagnosticAt = AtomicLong(0L)
     }
 
@@ -138,6 +145,7 @@ class V2RayTestInstance(
             Logs.w(it)
         }
         init()
+        ensureDirectTestNetwork()
         launch()
         if (pluginConfigs.isNotEmpty()) {
             delay(500L)
@@ -158,6 +166,68 @@ class V2RayTestInstance(
             underlyingNetwork = it
             if (it != null) logRouteDiagnostics(it)
         }
+    }
+
+    private suspend fun ensureDirectTestNetwork() {
+        val physicalNetwork = withTimeoutOrNull(DIRECT_NETWORK_WAIT_TIMEOUT_MS) {
+            var readyNetwork: Network? = null
+            while (readyNetwork == null) {
+                val network = underlyingNetwork
+                val capabilities = network?.let {
+                    runCatching { SagerNet.connectivity.getNetworkCapabilities(it) }.getOrNull()
+                }
+                if (network != null && capabilities?.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_NOT_VPN
+                    ) == true
+                ) {
+                    readyNetwork = network
+                } else {
+                    delay(DIRECT_NETWORK_POLL_INTERVAL_MS)
+                }
+            }
+            readyNetwork
+        } ?: run {
+            DiagnosticLog.error(
+                "profile-test-route",
+                "test-route-guard result=blocked reason=no-non-vpn-network"
+            )
+            throw CancellationException("No non-VPN network; refusing to test the profile through VPN")
+        }
+
+        val systemVpnActive = DataStore.serviceMode == Key.MODE_VPN &&
+                DataStore.tunImplementation == TunImplementation.SYSTEM &&
+                (SagerNet.started || DataStore.startedProfile > 0L)
+        val protectSocketReady = if (systemVpnActive && protectPath.isNotBlank()) {
+            withTimeoutOrNull(DIRECT_NETWORK_WAIT_TIMEOUT_MS) {
+                while (!File(protectPath).exists()) delay(DIRECT_NETWORK_POLL_INTERVAL_MS)
+                true
+            } == true
+        } else {
+            false
+        }
+        if (systemVpnActive && (protectPath.isBlank() || !protectSocketReady)) {
+            DiagnosticLog.error(
+                "profile-test-route",
+                "test-route-guard result=blocked reason=protect-socket-unavailable " +
+                        "protectPathConfigured=${protectPath.isNotBlank()} " +
+                        "protectSocketExists=$protectSocketReady"
+            )
+            throw CancellationException("VPN bypass unavailable: the socket-protection path is missing")
+        }
+
+        val bypassMode = when {
+            systemVpnActive -> "vpn-protect-socket"
+            DataStore.serviceMode == Key.MODE_VPN && DataStore.tunImplementation != TunImplementation.SYSTEM &&
+                    (SagerNet.started || DataStore.startedProfile > 0L) -> "app-excluded-from-vpn"
+            else -> "physical-network"
+        }
+        DiagnosticLog.event(
+            "profile-test-route",
+            "test-route-guard result=ready bypassMode=$bypassMode " +
+                    "resolverNetwork=non-vpn protectPathConfigured=${protectPath.isNotBlank()} " +
+                    "protectSocketExists=${protectPath.isNotBlank() && File(protectPath).exists()}"
+        )
+        logRouteDiagnostics(physicalNetwork)
     }
 
     private fun logRouteDiagnostics(network: Network) {

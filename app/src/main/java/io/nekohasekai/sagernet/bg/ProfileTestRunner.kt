@@ -371,6 +371,7 @@ object ProfileTestRunner {
         geminiFilter: Boolean = false,
         resetProfileIds: List<Long> = emptyList(),
     ) {
+        DiagnosticLog.beginProfileTestSession(if (resume) "manual-url-test-resume" else "manual-url-test")
         AutoVpnManager.refreshNetworkStatus("profile-test-start")
         val ids = profileIdsToTest.distinct()
         DiagnosticLog.critical(
@@ -1227,8 +1228,9 @@ class ProfileTestWorker(
                                         val vpnServiceMode = DataStore.serviceMode == Key.MODE_VPN
                                         val vpnServiceStarted = SagerNet.started
                                         val activeVpnProfile = DataStore.startedProfile > 0L
+                                        val vpnServiceActive = vpnServiceStarted || activeVpnProfile
                                         val protectPath = if (
-                                            systemTun && vpnServiceMode && vpnServiceStarted && activeVpnProfile
+                                            systemTun && vpnServiceMode && vpnServiceActive
                                         ) {
                                             SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path"
                                         } else {
@@ -1240,6 +1242,7 @@ class ProfileTestWorker(
                                                     "systemTun=$systemTun vpnServiceMode=$vpnServiceMode " +
                                                     "vpnServiceStarted=$vpnServiceStarted " +
                                                     "activeVpnProfile=$activeVpnProfile " +
+                                                    "vpnServiceActive=$vpnServiceActive " +
                                                     "protectPathConfigured=${protectPath.isNotEmpty()} " +
                                                     ProfileTestRunner.profileDiagnosticSummary(profile)
                                         )
