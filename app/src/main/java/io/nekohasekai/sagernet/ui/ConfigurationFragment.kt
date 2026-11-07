@@ -320,6 +320,20 @@ class ConfigurationFragment @JvmOverloads constructor(
             if (adapter.groupList.size > position) {
                 tab.text = groupTitle(adapter.groupList[position])
             }
+            if (SagerNet.isTv) {
+                tab.view.isFocusable = true
+                tab.view.isFocusableInTouchMode = true
+            }
+            tab.view.setOnKeyListener { tabView, keyCode, event ->
+                if (SagerNet.isTv && event.action == KeyEvent.ACTION_DOWN &&
+                    keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                ) {
+                    focusFirstProfileCard(position, tabView)
+                    true
+                } else {
+                    false
+                }
+            }
             tab.view.setOnLongClickListener { // clear toast
                 true
             }
@@ -376,6 +390,32 @@ class ConfigurationFragment @JvmOverloads constructor(
         }
 
         (requireActivity() as? MainActivity)?.onBackPressedCallback?.isEnabled = false
+    }
+
+    private fun focusFirstProfileCard(groupIndex: Int, sourceTab: View) {
+        if (!SagerNet.isTv) return
+        val groupId = adapter.groupList.getOrNull(groupIndex)?.id ?: return
+
+        fun requestFocusWhenReady(attempt: Int) {
+            if (!isAdded || view == null || groupPager.currentItem != groupIndex || !sourceTab.hasFocus()) return
+            val groupFragment = childFragmentManager.findFragmentByTag("f$groupId") as? GroupFragment
+            val list = groupFragment?.let {
+                runCatching { it.configurationListView }.getOrNull()
+            }
+            if (list != null) {
+                val firstCard = list.findViewHolderForAdapterPosition(0)?.itemView ?: list.getChildAt(0)
+                if (firstCard?.requestFocus() == true) return
+                if (attempt >= 6) {
+                    list.requestFocus()
+                    return
+                }
+            } else if (attempt >= 6) {
+                return
+            }
+            groupPager.postDelayed({ requestFocusWhenReady(attempt + 1) }, 100L)
+        }
+
+        groupPager.post { requestFocusWhenReady(0) }
     }
 
     override fun onResume() {
@@ -3070,10 +3110,23 @@ class ConfigurationFragment @JvmOverloads constructor(
                     adapter.reloadProfiles(forceScrollTop = true)
                 }
                 view.setOnLongClickListener {
+                    val mainActivity = activity as? MainActivity
+                    val actionText = if (mainActivity?.state?.canStop == true) {
+                        R.string.stop
+                    } else {
+                        R.string.start
+                    }
                     MaterialAlertDialogBuilder(requireContext())
                         .setTitle(proxyEntity.displayName())
                         .setMessage(AutoVpnManager.diagnosticsText(mode))
-                        .setPositiveButton(android.R.string.ok, null)
+                        .setPositiveButton(actionText) { _, _ ->
+                            if (mainActivity?.state?.canStop != true) {
+                                AutoVpnManager.selectMode(mode)
+                                adapter.reloadProfiles(forceScrollTop = true)
+                            }
+                            mainActivity?.performVpnButtonAction()
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
                         .show()
                     true
                 }

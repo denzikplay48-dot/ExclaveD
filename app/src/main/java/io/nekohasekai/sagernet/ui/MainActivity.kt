@@ -186,22 +186,7 @@ class MainActivity : ThemedActivity(),
         binding.fab.isFocusable = SagerNet.isTv
         binding.fab.isFocusableInTouchMode = SagerNet.isTv
         binding.fab.setOnClickListener {
-            if (state.canStop) {
-                DiagnosticLog.critical(
-                    "ui",
-                    "fab-stop-click state=$state ${DiagnosticLog.stateSummary()}"
-                )
-                SagerNet.stopService()
-            } else {
-                DiagnosticLog.critical(
-                    "ui",
-                    "fab-start-click state=$state selected=${DataStore.selectedProxy} " +
-                            "autoEnabled=${DataStore.autoVpnEnabled} autoMode=${DataStore.autoVpnMode} " +
-                            "${DiagnosticLog.stateSummary()}"
-                )
-                vpnStartRequestedFromUi = true
-                connect.launch(null)
-            }
+            performVpnButtonAction()
         }
         binding.fab.setOnFocusChangeListener { view, hasFocus ->
             binding.fabFocusRing.visibility = if (hasFocus) View.VISIBLE else View.GONE
@@ -213,6 +198,10 @@ class MainActivity : ThemedActivity(),
                 .start()
         }
         binding.stats.setOnClickListener { if (state == BaseService.State.Connected) binding.stats.testConnection() }
+        if (SagerNet.isTv) {
+            binding.stats.isFocusable = false
+            binding.stats.isFocusableInTouchMode = false
+        }
 
         setContentView(binding.root)
 
@@ -797,7 +786,6 @@ class MainActivity : ThemedActivity(),
         scheduleReleaseUpdateCheck()
         maybeRestoreAutoConnection("main-activity-resume")
         AutoVpnManager.refreshNetworkStatus("main-activity-resume")
-        AutoVpnManager.refreshServiceAvailabilityOnAppResume()
     }
 
     private fun maybeRestoreAutoConnection(source: String) {
@@ -1206,18 +1194,9 @@ class MainActivity : ThemedActivity(),
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                if (super.onKeyDown(keyCode, event)) return true
-                binding.drawerLayout.open()
-                navigation.requestFocus()
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                if (binding.drawerLayout.isOpen) {
-                    binding.drawerLayout.close()
-                    return true
-                }
-            }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && binding.drawerLayout.isOpen) {
+            binding.drawerLayout.close()
+            return true
         }
 
         if (super.onKeyDown(keyCode, event)) return true
@@ -1225,6 +1204,25 @@ class MainActivity : ThemedActivity(),
 
         val fragment = supportFragmentManager.findFragmentById(R.id.fragment_holder) as? ToolbarFragment
         return fragment != null && fragment.onKeyDown(keyCode, event)
+    }
+
+    fun performVpnButtonAction() {
+        if (state.canStop) {
+            DiagnosticLog.critical(
+                "ui",
+                "fab-stop-click state=$state ${DiagnosticLog.stateSummary()}"
+            )
+            SagerNet.stopService()
+        } else {
+            DiagnosticLog.critical(
+                "ui",
+                "fab-start-click state=$state selected=${DataStore.selectedProxy} " +
+                        "autoEnabled=${DataStore.autoVpnEnabled} autoMode=${DataStore.autoVpnMode} " +
+                        "${DiagnosticLog.stateSummary()}"
+            )
+            vpnStartRequestedFromUi = true
+            connect.launch(null)
+        }
     }
 
     private companion object {
