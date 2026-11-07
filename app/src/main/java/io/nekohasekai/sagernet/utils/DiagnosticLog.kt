@@ -84,7 +84,11 @@ object DiagnosticLog {
         event("app", "initial-state ${stateSummary()}")
     }
 
-    fun beginAutoSearchSession(source: String) {
+    fun beginAutoSearchSession(source: String) = beginSession("auto-search", source)
+
+    fun beginProfileTestSession(source: String) = beginSession("profile-test", source)
+
+    private fun beginSession(kind: String, source: String) {
         if (DataStore.logLevel == LogLevel.NONE) {
             endAutoSearchSessionAndClear()
             return
@@ -96,7 +100,10 @@ object DiagnosticLog {
             DataStore.diagnosticJournalSessionId = sessionId
         }
         startMainThreadWatchdog()
-        critical("diagnostic", "auto-search-session-start source=${oneLine(source, 80)} ${stateSummary()}")
+        critical(
+            "diagnostic",
+            "session-start sessionType=$kind source=${oneLine(source, 80)} ${stateSummary()}"
+        )
     }
 
     fun endAutoSearchSessionAndClear() {
@@ -454,6 +461,8 @@ object DiagnosticLog {
         "candidate-test-failed" to "Профиль не прошёл проверку",
         "candidate-test-cancelled" to "Проверка профиля отменена",
         "profile-test-start" to "Начата проверка профиля",
+        "session-start" to "Начата диагностическая сессия",
+        "test-route-guard" to "Проверен обход VPN для теста профиля",
         "test-route-state" to "Состояние маршрута теста",
         "vpn-protect-window" to "Защита сокетов во время теста",
         "candidate-batch-cancelled" to "Пакет проверок отменён",
@@ -498,6 +507,7 @@ object DiagnosticLog {
         "complete" to "загрузка завершена", "workingResult" to "профиль рабочий", "trigger" to "причина запуска",
         "urlTester" to "URL-проверка", "stillCurrent" to "тот же профиль", "autoRestarting" to "идёт автопереключение",
         "immediateVerifyActive" to "идёт проверка после подключения", "monitorActive" to "контроль активен",
+        "sessionType" to "тип сессии", "bypassMode" to "маршрут обхода VPN", "result" to "результат",
         "systemTun" to "System TUN", "vpnServiceMode" to "VPN-режим службы",
         "vpnServiceStarted" to "служба VPN запущена", "activeVpnProfile" to "активный профиль VPN",
         "protectPathConfigured" to "путь защиты задан", "protectSocketExists" to "сокет защиты существует",
@@ -517,6 +527,22 @@ object DiagnosticLog {
         appendLine("Дата формирования: " + timestamp())
         appendLine("Устройство: " + oneLine(Build.MANUFACTURER + " " + Build.MODEL))
         appendLine("Android API: " + Build.VERSION.SDK_INT)
+        appendLine("Тип журнала: " + when (DataStore.logLevel) {
+            LogLevel.NONE -> "none"
+            LogLevel.ERROR -> "ошибки"
+            LogLevel.WARNING -> "предупреждения"
+            LogLevel.INFO -> "информация"
+            LogLevel.DEBUG -> "отладка"
+            else -> "неизвестно"
+        })
+        appendLine(
+            "Диагностическая сессия: " +
+                    if (DataStore.logLevel != LogLevel.NONE && DataStore.diagnosticJournalSessionId > 0L) {
+                        "активна"
+                    } else {
+                        "не активна"
+                    }
+        )
         appendLine("Текущее состояние: " + formatStateSummary(stateSummary()))
         appendLine()
         appendLine("События:")
@@ -626,6 +652,22 @@ object DiagnosticLog {
                     "non-vpn" -> "физическая сеть (не VPN)"
                     "other" -> "другая сеть"
                     else -> "неизвестно"
+                }
+                key == "bypassMode" -> when (rawValue) {
+                    "vpn-protect-socket" -> "защита сокета VPN-службой"
+                    "app-excluded-from-vpn" -> "приложение исключено из VPN"
+                    "physical-network" -> "физическая сеть без VPN"
+                    else -> rawValue
+                }
+                key == "result" -> when (rawValue) {
+                    "ready" -> "готово"
+                    "blocked" -> "остановлено"
+                    else -> rawValue
+                }
+                key == "sessionType" -> when (rawValue) {
+                    "auto-search" -> "автопоиск"
+                    "profile-test" -> "ручной URL-тест"
+                    else -> rawValue
                 }
                 key == "path" -> when (rawValue) {
                     "rendered-webview" -> "отрисованная страница"

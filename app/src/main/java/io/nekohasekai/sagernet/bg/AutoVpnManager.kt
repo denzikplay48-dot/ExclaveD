@@ -4313,8 +4313,7 @@ object AutoVpnManager {
         return if (
             DataStore.tunImplementation == TunImplementation.SYSTEM &&
             DataStore.serviceMode == Key.MODE_VPN &&
-            SagerNet.started &&
-            DataStore.startedProfile > 0L
+            (SagerNet.started || DataStore.startedProfile > 0L)
         ) {
             SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path"
         } else {

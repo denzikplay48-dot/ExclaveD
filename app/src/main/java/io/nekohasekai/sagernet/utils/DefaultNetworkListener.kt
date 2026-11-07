@@ -98,8 +98,18 @@ object DefaultNetworkListener {
         networkActor.send(NetworkMessage.Start(key, listener))
 
     suspend fun get() = if (fallback) @TargetApi(23) {
-        SagerNet.connectivity.activeNetwork
-            ?: throw UnknownHostException() // failed to listen, return current if available
+        val connectivity = SagerNet.connectivity
+        val networks = (listOfNotNull(connectivity.activeNetwork) + connectivity.allNetworks).distinct()
+        networks.firstOrNull { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@firstOrNull false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } ?: networks.firstOrNull { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@firstOrNull false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } ?: throw UnknownHostException("No physical network outside VPN")
     } else NetworkMessage.Get().run {
         networkActor.send(this)
         response.await()
@@ -112,8 +122,7 @@ object DefaultNetworkListener {
     // NB: this runs in ConnectivityThread, and this behavior cannot be changed until API 26
     private val Callback: ConnectivityManager.NetworkCallback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         object: ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
-            override fun onAvailable(network: Network) =
-                runBlocking { networkActor.send(NetworkMessage.Put(network)) }
+            override fun onAvailable(network: Network) = publishIfPhysical(network)
 
             override fun onCapabilitiesChanged(
                 network: Network, networkCapabilities: NetworkCapabilities
@@ -122,25 +131,39 @@ object DefaultNetworkListener {
                     val wifiInfo = networkCapabilities.transportInfo as WifiInfo
                     ssid = wifiInfo.ssid
                 }
-                runBlocking { networkActor.send(NetworkMessage.Update(network)) }
+                publishIfPhysical(network, networkCapabilities)
             }
 
-            override fun onLost(network: Network) =
-                runBlocking { networkActor.send(NetworkMessage.Lost(network)) }
+            override fun onLost(network: Network) = runBlocking { networkActor.send(NetworkMessage.Lost(network)) }
         }
     } else {
         object: ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) =
-                runBlocking { networkActor.send(NetworkMessage.Put(network)) }
+            override fun onAvailable(network: Network) = publishIfPhysical(network)
 
             override fun onCapabilitiesChanged(
                 network: Network, networkCapabilities: NetworkCapabilities
             ) { // it's a good idea to refresh capabilities
-                runBlocking { networkActor.send(NetworkMessage.Update(network)) }
+                publishIfPhysical(network, networkCapabilities)
             }
 
-            override fun onLost(network: Network) =
-                runBlocking { networkActor.send(NetworkMessage.Lost(network)) }
+            override fun onLost(network: Network) = runBlocking { networkActor.send(NetworkMessage.Lost(network)) }
+        }
+    }
+
+    private fun publishIfPhysical(
+        network: Network,
+        capabilities: NetworkCapabilities? = runCatching {
+            SagerNet.connectivity.getNetworkCapabilities(network)
+        }.getOrNull(),
+    ) {
+        runBlocking {
+            if (capabilities != null) {
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
+                    networkActor.send(NetworkMessage.Put(network))
+                } else {
+                    networkActor.send(NetworkMessage.Lost(network))
+                }
+            }
         }
     }
 
@@ -148,6 +171,7 @@ object DefaultNetworkListener {
     private val request = NetworkRequest.Builder().apply {
         addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+        addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         if (Build.VERSION.SDK_INT == 23) {  // workarounds for OEM bugs
             removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             removeCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
