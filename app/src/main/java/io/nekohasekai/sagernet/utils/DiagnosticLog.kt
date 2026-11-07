@@ -434,7 +434,8 @@ object DiagnosticLog {
     private val journalStatePattern = Regex(""" service\{[^}]*\} profileTest\{[^}]*\} auto\{[^}]*\} memory\{[^}]*\}""")
     private val journalAreas = mapOf(
         "app" to "Приложение", "diagnostic" to "Диагностика", "auto-vpn" to "Авто-VPN",
-        "profile-test" to "Проверка профилей", "service" to "VPN-служба",
+        "profile-test" to "Проверка профилей", "profile-test-worker" to "Проверка профилей",
+        "profile-test-route" to "Маршрут проверки", "service" to "VPN-служба",
         "auto-vpn-services" to "Проверка доступности сайтов",
         "configuration-ui" to "Экран конфигураций", "ui" to "Интерфейс",
         "watchdog" to "Контроль зависания", "subscription" to "Подписки",
@@ -452,6 +453,9 @@ object DiagnosticLog {
         "candidate-test-success" to "Профиль прошёл проверку",
         "candidate-test-failed" to "Профиль не прошёл проверку",
         "candidate-test-cancelled" to "Проверка профиля отменена",
+        "profile-test-start" to "Начата проверка профиля",
+        "test-route-state" to "Состояние маршрута теста",
+        "vpn-protect-window" to "Защита сокетов во время теста",
         "candidate-batch-cancelled" to "Пакет проверок отменён",
         "progress-clear" to "Счётчик проверки очищен",
         "progress-reset" to "Счётчик проверки сброшен",
@@ -494,6 +498,11 @@ object DiagnosticLog {
         "complete" to "загрузка завершена", "workingResult" to "профиль рабочий", "trigger" to "причина запуска",
         "urlTester" to "URL-проверка", "stillCurrent" to "тот же профиль", "autoRestarting" to "идёт автопереключение",
         "immediateVerifyActive" to "идёт проверка после подключения", "monitorActive" to "контроль активен",
+        "systemTun" to "System TUN", "vpnServiceMode" to "VPN-режим службы",
+        "vpnServiceStarted" to "служба VPN запущена", "activeVpnProfile" to "активный профиль VPN",
+        "protectPathConfigured" to "путь защиты задан", "protectSocketExists" to "сокет защиты существует",
+        "resolverNetwork" to "сеть DNS", "wifi" to "Wi-Fi", "cellular" to "мобильная сеть",
+        "calls" to "вызовов защиты", "failures" to "ошибок защиты",
         "main" to "главный процесс", "sdk" to "версия Android", "device" to "устройство",
         "pid" to "ID процесса", "process" to "процесс", "flavor" to "сборка", "version" to "версия",
         "selected" to "выбран профиль", "startedProfile" to "подключённый профиль", "mainStack" to "стек главного потока",
@@ -612,6 +621,12 @@ object DiagnosticLog {
                 rawValue == "true" -> "да"
                 rawValue == "false" -> "нет"
                 key == "mode" -> when (rawValue) { "1" -> "без RU"; "2" -> "Gemini"; else -> "обычный" }
+                key == "resolverNetwork" -> when (rawValue) {
+                    "vpn" -> "VPN"
+                    "non-vpn" -> "физическая сеть (не VPN)"
+                    "other" -> "другая сеть"
+                    else -> "неизвестно"
+                }
                 key == "path" -> when (rawValue) {
                     "rendered-webview" -> "отрисованная страница"
                     "http" -> "HTTP-запрос"

@@ -41,6 +41,7 @@ import io.nekohasekai.sagernet.ktx.listByLineOrComma
 import io.nekohasekai.sagernet.ui.VpnRequestActivity
 import io.nekohasekai.sagernet.utils.DefaultNetworkListener
 import io.nekohasekai.sagernet.utils.Subnet
+import io.nekohasekai.sagernet.bg.test.TestProtectDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -322,6 +323,12 @@ class VpnService : BaseVpnService(),
     }
 
     val appStats = mutableListOf<AppStats>()
+
+    override fun protect(fd: Int): Boolean {
+        val protected = super.protect(fd)
+        TestProtectDiagnostics.record(protected)
+        return protected
+    }
 
     override fun updateStats(stats: AppStats) {
         appStats.add(stats)
