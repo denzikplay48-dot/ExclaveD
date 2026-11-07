@@ -62,12 +62,13 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     private var diagnosticJournalSelected = false
     private var viewAvailable = false
     private var logcatScrollGeneration = 0L
+    private var logcatUserScrollGeneration = 0L
 
     companion object {
         private const val MAX_VISIBLE_LOG_LINES = 2_000
-        private const val MAX_VISIBLE_LOGCAT_LINES = 1_500
-        private const val MAX_LOGCAT_BATCH_LINES = 200
-        private const val LOGCAT_BATCH_INTERVAL_NS = 500_000_000L
+        private const val MAX_VISIBLE_LOGCAT_LINES = 100
+        private const val MAX_LOGCAT_BATCH_LINES = 100
+        private const val LOGCAT_BATCH_INTERVAL_NS = 5_000_000_000L
         private const val MAX_INITIAL_JOURNAL_BYTES = 1024 * 1024
         private const val MAX_LOGCAT_AGE_MS = 10L * 60L * 1000L
         private const val LOGCAT_AGE_TRIM_INTERVAL_MS = 30_000L
@@ -80,6 +81,12 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         super.onViewCreated(view, savedInstanceState)
         binding = LayoutLogcatBinding.bind(view)
         toolbar.setTitle(R.string.menu_log)
+        binding.logsScrollView.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
+                logcatUserScrollGeneration++
+            }
+            false
+        }
 
         toolbar.inflateMenu(R.menu.logcat_menu)
         toolbar.setOnMenuItemClickListener(this)
@@ -185,46 +192,58 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val textView = binding.logsTextView
         val oldScrollY = scrollView.scrollY
         val wasAtBottom = scrollView.childCount == 0 || !scrollView.canScrollVertically(1)
+        val lineHeight = textView.lineHeight.coerceAtLeast(1)
+        var removedLines = 0
 
-        textView.append(chunk)
-        val currentText = textView.text
-        val lineCount = currentText.count { it == '\n' } +
-                if (currentText.isNotEmpty() && currentText.last() != '\n') 1 else 0
+        val combined = SpannableStringBuilder(textView.text).append(chunk)
+        val ageTrimOffset = logcatAgeTrimOffset(combined)
+        if (ageTrimOffset > 0) {
+            removedLines += combined.subSequence(0, ageTrimOffset).count { it == '\n' }
+            combined.delete(0, ageTrimOffset)
+        }
+        val lineCount = combined.count { it == '\n' } +
+                if (combined.isNotEmpty() && combined.last() != '\n') 1 else 0
         val excessLines = lineCount - MAX_VISIBLE_LOGCAT_LINES
         if (excessLines > 0) {
-            val trimmed = SpannableStringBuilder(currentText)
-            var removedLines = 0
             var trimOffset = 0
-            for (index in 0 until trimmed.length) {
-                if (trimmed[index] == '\n') {
-                    removedLines++
-                    if (removedLines == excessLines) {
+            var trimmedCount = 0
+            for (index in 0 until combined.length) {
+                if (combined[index] == '\n') {
+                    trimmedCount++
+                    if (trimmedCount == excessLines) {
                         trimOffset = index + 1
                         break
                     }
                 }
             }
             if (trimOffset > 0) {
-                trimmed.delete(0, trimOffset)
-                textView.text = trimmed
+                combined.delete(0, trimOffset)
+                removedLines += trimmedCount
             }
         }
-        scheduleLogcatScroll(scrollView, oldScrollY, wasAtBottom)
+        textView.text = combined
+        scheduleLogcatScroll(scrollView, oldScrollY, wasAtBottom, removedLines, lineHeight)
     }
 
     private fun scheduleLogcatScroll(
         scrollView: androidx.core.widget.NestedScrollView,
         oldScrollY: Int,
         wasAtBottom: Boolean,
+        removedLines: Int,
+        lineHeight: Int,
     ) {
         val generation = ++logcatScrollGeneration
+        val userScrollGeneration = logcatUserScrollGeneration
         scrollView.post {
-            if (!viewAvailable || generation != logcatScrollGeneration || scrollView.scrollY != oldScrollY) return@post
+            if (!viewAvailable || generation != logcatScrollGeneration ||
+                userScrollGeneration != logcatUserScrollGeneration
+            ) return@post
             if (wasAtBottom) {
                 scrollView.fullScroll(View.FOCUS_DOWN)
-            } else {
+            } else if (removedLines > 0) {
                 val maxScroll = (scrollView.getChildAt(0).height - scrollView.height).coerceAtLeast(0)
-                scrollView.scrollTo(0, oldScrollY.coerceAtMost(maxScroll))
+                val preservedScrollY = (oldScrollY - removedLines * lineHeight).coerceAtLeast(0)
+                scrollView.scrollTo(0, preservedScrollY.coerceAtMost(maxScroll))
             }
         }
     }
@@ -268,9 +287,16 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val trimmed = SpannableStringBuilder(textView.text)
         val trimOffset = logcatAgeTrimOffset(trimmed)
         if (trimOffset <= 0) return
+        val removedLines = trimmed.subSequence(0, trimOffset).count { it == '\n' }
         trimmed.delete(0, trimOffset)
         textView.text = trimmed
-        scheduleLogcatScroll(scrollView, oldScrollY, wasAtBottom)
+        scheduleLogcatScroll(
+            scrollView,
+            oldScrollY,
+            wasAtBottom,
+            removedLines,
+            textView.lineHeight.coerceAtLeast(1),
+        )
     }
 
     private fun startLogcatStream() {
@@ -335,6 +361,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val stdout = BufferedReader(InputStreamReader(process.inputStream))
         val bufferedLogLines = arrayListOf<String>()
         var timeLastNotify = System.nanoTime()
+        var firstBatch = true
         try {
             while (true) {
                 val line = try {
@@ -346,13 +373,19 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                     null
                 } ?: break
                 bufferedLogLines.add(line)
+                if (bufferedLogLines.size > MAX_LOGCAT_BATCH_LINES) bufferedLogLines.removeAt(0)
                 val timeNow = System.nanoTime()
-                if (
-                    bufferedLogLines.size < MAX_LOGCAT_BATCH_LINES &&
-                    (timeNow - timeLastNotify) < LOGCAT_BATCH_INTERVAL_NS && stdout.ready()
-                ) continue
+                val elapsedSinceUpdate = timeNow - timeLastNotify
+                if (firstBatch) {
+                    if (bufferedLogLines.size < MAX_LOGCAT_BATCH_LINES &&
+                        elapsedSinceUpdate < LOGCAT_BATCH_INTERVAL_NS
+                    ) continue
+                } else if (elapsedSinceUpdate < LOGCAT_BATCH_INTERVAL_NS) {
+                    continue
+                }
 
                 timeLastNotify = timeNow
+                firstBatch = false
 
                 onMainDispatcher {
                     if (!viewAvailable || diagnosticJournalSelected) return@onMainDispatcher

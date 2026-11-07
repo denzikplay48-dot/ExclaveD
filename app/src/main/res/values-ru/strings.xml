@@ -702,6 +702,7 @@
     <string name="auto_vpn_status_selecting">%1$s: подбираю профиль...</string>
     <string name="auto_vpn_status_prechecking_candidate">%1$s: предварительно проверяю %2$s...</string>
     <string name="auto_vpn_status_initial_search">%1$s: запускаю VPN, сначала ищу кандидатов...</string>
+    <string name="auto_vpn_status_searching_direct">%1$s: VPN отключён, ищу рабочий профиль напрямую...</string>
     <string name="auto_vpn_status_recovering_service">%1$s: служба VPN прервалась, восстанавливаю подключение и продолжаю сохранённый поиск...</string>
     <string name="auto_vpn_status_initial_found">%1$s: найдено кандидатов %2$d/%3$d</string>
     <string name="auto_vpn_status_testing_more">%1$s: проверяю следующие профили...</string>
