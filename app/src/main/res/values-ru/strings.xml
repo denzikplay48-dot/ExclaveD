@@ -702,11 +702,15 @@
     <string name="auto_vpn_status_selecting">%1$s: подбираю профиль...</string>
     <string name="auto_vpn_status_prechecking_candidate">%1$s: предварительно проверяю %2$s...</string>
     <string name="auto_vpn_status_initial_search">%1$s: запускаю VPN, сначала ищу кандидатов...</string>
+    <string name="auto_vpn_status_recovering_service">%1$s: служба VPN прервалась, восстанавливаю подключение и продолжаю сохранённый поиск...</string>
     <string name="auto_vpn_status_initial_found">%1$s: найдено кандидатов %2$d/%3$d</string>
     <string name="auto_vpn_status_testing_more">%1$s: проверяю следующие профили...</string>
     <string name="auto_vpn_status_refilling_reserve">%1$s: пополняю запас напрямую, в обход VPN (%2$d/%3$d)</string>
+    <string name="auto_vpn_status_refill_retry">%1$s: временная ошибка добора, повторю поиск через %2$d сек...</string>
     <string name="auto_vpn_status_refill_direct_unavailable">%1$s: добор приостановлен, нет гарантированного обхода VPN</string>
     <string name="auto_vpn_status_clearing_quarantine">%1$s: сбрасываю карантин перед следующим кругом...</string>
+    <string name="auto_vpn_status_cycle_checking_vpn">%1$s: проверяю интернет через активный VPN перед обновлением подписок...</string>
+    <string name="auto_vpn_status_cycle_stopping_vpn">%1$s: через активный VPN нет интернета, отключаю его перед обновлением подписок...</string>
     <string name="auto_vpn_status_restart_scan">%1$s: запускаю следующий круг проверки...</string>
     <string name="auto_vpn_status_updating_subscriptions">%1$s: обновление подписок, обработано %2$d/%3$d</string>
     <string name="auto_vpn_status_no_subscriptions">%1$s: подписок нет, пропускаю обновление</string>

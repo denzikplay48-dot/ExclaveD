@@ -537,14 +537,37 @@ class BaseService {
         fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
             val data = data
+            val stickyAutoVpnRestart = intent == null &&
+                    DataStore.serviceMode == Key.MODE_VPN && DataStore.autoVpnEnabled
+            if (stickyAutoVpnRestart) {
+                val interruptedProfile = DataStore.startedProfile
+                DataStore.startedProfile = 0L
+                if (interruptedProfile > 0L) {
+                    DataStore.selectedProxy = interruptedProfile
+                    DataStore.autoVpnServiceStartRequested = true
+                    AutoVpnManager.prepareServiceRecovery(interruptedProfile)
+                }
+                DiagnosticLog.critical(
+                    "service",
+                    "sticky-auto-vpn-recovery profile=$interruptedProfile selected=${DataStore.selectedProxy} " +
+                            "resumeProgress=${DataStore.autoVpnProgressRunning} " +
+                            "${DiagnosticLog.stateSummary()}"
+                )
+            }
             DiagnosticLog.critical(
                 "service",
                 "onStartCommand action=${intent?.action.orEmpty()} flags=$flags startId=$startId " +
                         "state=${data.state} selected=${DataStore.selectedProxy} autoEnabled=${DataStore.autoVpnEnabled} " +
                         "${DiagnosticLog.stateSummary()}"
             )
-            if (data.state != State.Stopped) return Service.START_NOT_STICKY
-            if (AutoVpnManager.shouldStartAutoSelectionInsteadOfService()) {
+            if (data.state != State.Stopped) {
+                return if (DataStore.serviceMode == Key.MODE_VPN && DataStore.autoVpnEnabled) {
+                    Service.START_STICKY
+                } else {
+                    Service.START_NOT_STICKY
+                }
+            }
+            if (!stickyAutoVpnRestart && AutoVpnManager.shouldStartAutoSelectionInsteadOfService()) {
                 DiagnosticLog.critical("service", "onStartCommand-auto-selection-instead")
                 ensureCloseReceiverRegistered()
                 data.notification?.destroy()
@@ -645,7 +668,11 @@ class BaseService {
                     data.connectingJob = null
                 }
             }
-            return Service.START_NOT_STICKY
+            return if (DataStore.serviceMode == Key.MODE_VPN && DataStore.autoVpnEnabled) {
+                Service.START_STICKY
+            } else {
+                Service.START_NOT_STICKY
+            }
         }
     }
 
