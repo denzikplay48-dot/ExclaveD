@@ -128,6 +128,10 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
             configurationStore.putBoolean(Key.TUN_SYSTEM_DEFAULT_MIGRATION, true)
         }
+        if (configurationStore.getBoolean(Key.TUN_SYSTEM_STABLE_RELEASE_MIGRATION) != true) {
+            configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
+            configurationStore.putBoolean(Key.TUN_SYSTEM_STABLE_RELEASE_MIGRATION, true)
+        }
         if (configurationStore.getBoolean(Key.SYSTEM_DOWNLOAD_DEFAULTS_MIGRATION) != true) {
             configurationStore.putString(Key.TUN_IMPLEMENTATION, TunImplementation.SYSTEM.toString())
             configurationStore.putBoolean(Key.AUTO_VPN_TRAFFIC_DOWNLOAD_ENABLED, true)
@@ -150,6 +154,13 @@ object DataStore : OnPreferenceDataStoreChangeListener {
                 configurationStore.putString(Key.AUTO_VPN_FAILURES_BEFORE_SWITCH, "1")
             }
             configurationStore.putBoolean(Key.AUTO_VPN_SINGLE_FAILURE_DEFAULT_MIGRATION, true)
+        }
+        if (configurationStore.getBoolean(Key.AUTO_VPN_QUARANTINE_135_DEFAULT_MIGRATION) != true) {
+            val savedQuarantineMinutes = configurationStore.getString(Key.AUTO_VPN_QUARANTINE_MINUTES)?.toIntOrNull()
+            if (savedQuarantineMinutes == null || savedQuarantineMinutes == 45) {
+                configurationStore.putString(Key.AUTO_VPN_QUARANTINE_MINUTES, "135")
+            }
+            configurationStore.putBoolean(Key.AUTO_VPN_QUARANTINE_135_DEFAULT_MIGRATION, true)
         }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
@@ -395,7 +406,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnInitialSelectionTimeoutSeconds by configurationStore.stringToInt(Key.AUTO_VPN_INITIAL_SELECTION_TIMEOUT_SECONDS) { 60 }
     var autoVpnLiteMode by configurationStore.boolean(Key.AUTO_VPN_LITE_MODE) { true }
     var autoVpnSwitchCooldownSeconds by configurationStore.stringToInt(Key.AUTO_VPN_SWITCH_COOLDOWN_SECONDS) { 0 }
-    var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 45 }
+    var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 135 }
     var autoVpnQuarantineRevision by configurationStore.long(Key.AUTO_VPN_QUARANTINE_REVISION)
     fun autoVpnQuarantineEntries(): Map<Long, Long> {
         val prefix = Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX
@@ -430,6 +441,8 @@ object DataStore : OnPreferenceDataStoreChangeListener {
         return autoVpnQuarantineRevision
     }
     var autoVpnGeminiRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_GEMINI_REJECTED_KEYS)
+    var autoVpnGeminiRejectedNames by configurationStore.string(Key.AUTO_VPN_GEMINI_REJECTED_NAMES)
+    var autoVpnGeminiRejectedRevision by configurationStore.long(Key.AUTO_VPN_GEMINI_REJECTED_REVISION)
     var autoVpnExitCountryRejectedKeys by configurationStore.stringSet(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_KEYS)
     var autoVpnExitCountryRejectedRevision by configurationStore.long(Key.AUTO_VPN_EXIT_COUNTRY_REJECTED_REVISION)
     var autoVpnProfileScoreStats by configurationStore.string(Key.AUTO_VPN_PROFILE_SCORE_STATS)
@@ -456,11 +469,17 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnReserveIdsAny by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_ANY)
     var autoVpnReserveIdsNonRu by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_NON_RU)
     var autoVpnReserveIdsGemini by configurationStore.string(Key.AUTO_VPN_RESERVE_IDS_GEMINI)
+    var autoVpnScannedIdsAny by configurationStore.string(Key.AUTO_VPN_SCANNED_IDS_ANY)
+    var autoVpnScannedIdsNonRu by configurationStore.string(Key.AUTO_VPN_SCANNED_IDS_NON_RU)
+    var autoVpnScannedIdsGemini by configurationStore.string(Key.AUTO_VPN_SCANNED_IDS_GEMINI)
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
     var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
+    var autoVpnActiveTrafficSnapshot by configurationStore.string(Key.AUTO_VPN_ACTIVE_TRAFFIC_SNAPSHOT)
     var autoVpnSiteSwitchFilters by configurationStore.stringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS) {
         setOf("GOOGLE", "YOUTUBE", "CHATGPT", "TELEGRAM")
     }
+    var autoVpnDirectSearchToken by configurationStore.long(Key.AUTO_VPN_DIRECT_SEARCH_TOKEN)
+    var autoVpnDirectSearchHeartbeat by configurationStore.long(Key.AUTO_VPN_DIRECT_SEARCH_HEARTBEAT)
     var autoVpnFloatingSwitchEnabled by configurationStore.boolean(Key.AUTO_VPN_FLOATING_SWITCH_ENABLED)
     var autoVpnFloatingSwitchX by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_X) { -1 }
     var autoVpnFloatingSwitchY by configurationStore.int(Key.AUTO_VPN_FLOATING_SWITCH_Y) { -1 }

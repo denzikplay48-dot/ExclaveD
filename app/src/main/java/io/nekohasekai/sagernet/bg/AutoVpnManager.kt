@@ -15,6 +15,7 @@ import android.content.Intent
 import android.database.sqlite.SQLiteDatabaseLockedException
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.util.Base64
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import io.nekohasekai.sagernet.Action
@@ -62,6 +63,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.IDN
+import java.net.Proxy
 import java.net.HttpURLConnection
 import java.net.URL
 import java.io.File
@@ -87,6 +89,8 @@ object AutoVpnManager {
     private const val AUTO_SCAN_PAGE_SIZE = 200
     private const val AUTO_SCAN_NEXT_CYCLE_DELAY_MS = 1000L
     private const val CYCLE_STATUS_VISIBLE_DELAY_MS = 750L
+    private const val SCANNED_IDS_PERSIST_MIN_INTERVAL_MS = 5000L
+    private const val DIRECT_SEARCH_STALE_MS = 45_000L
     private const val DIRECT_TEST_VPN_SETTLE_DELAY_MS = 2000L
     private const val DIRECT_TEST_VPN_STOP_TIMEOUT_MS = 15_000L
     private const val DIRECT_TEST_VPN_STOP_POLL_DELAY_MS = 100L
@@ -114,6 +118,7 @@ object AutoVpnManager {
     private const val POST_CONNECT_SETTLE_DELAY_MS = 3_000L
     private const val TRAFFIC_SPEED_HISTORY_SIZE = 5
     private const val TRAFFIC_SPEED_BASELINE_MIN_SAMPLES = 3
+    private const val DIRECT_NETWORK_RETRY_DELAY_MS = 45_000L
     private const val SCORE_NETWORK_STATUS_CACHE_MS = 15_000L
     private const val MAX_GEMINI_REJECTED_KEYS = 5000
     private const val PROFILE_RESULT_DB_RETRY_COUNT = 4
@@ -164,10 +169,12 @@ object AutoVpnManager {
 
     private data class ActiveTrafficSnapshot(
         val profileId: Long,
+        val mode: Int,
         val state: ActiveTrafficState,
         val downloadedBytes: Long = 0L,
         val expectedBytes: Long = 0L,
         val bytesPerSecond: Long? = null,
+        val checkedAt: Long = System.currentTimeMillis(),
     )
 
     private data class AutoProgressSnapshot(
@@ -267,9 +274,16 @@ object AutoVpnManager {
     private val hydratedReserveModes = mutableSetOf<Int>()
     private val manualCycleIds = mutableMapOf<Int, LinkedHashSet<Long>>()
     private val scannedIds = mutableMapOf<Int, LinkedHashSet<Long>>()
+    private val lastScannedIdsPersistAt = mutableMapOf<Int, Long>()
     private val exitCountryRejectedWriteLock = Any()
     private var exitCountryConfirmationJob: Job? = null
     private var pendingExitCountryConfirmation: PendingExitCountryConfirmation? = null
+    @Volatile
+    private var cachedGeminiRejectedKeys: Set<String>? = null
+    @Volatile
+    private var cachedGeminiRejectedNames: Set<String>? = null
+    @Volatile
+    private var cachedGeminiRejectedRevision = Long.MIN_VALUE
     @Volatile
     private var cachedExitCountryRejectedKeys: Set<String>? = null
     @Volatile
@@ -340,6 +354,8 @@ object AutoVpnManager {
     private var reserveRefillPaused = false
     private var trafficMonitorJob: Job? = null
     private var trafficDiagnosticJob: Job? = null
+    @Volatile
+    private var directNetworkRetryJob: Job? = null
     private val serviceAvailabilityLock = Any()
     private var serviceAvailabilityJob: Job? = null
     private var serviceAvailabilityAfterConnectJob: Job? = null
@@ -518,7 +534,7 @@ object AutoVpnManager {
                 app.getString(statusRes),
             )
         }
-        val trafficSnapshot = activeTrafficSnapshot?.takeIf { connectionActive && it.profileId == profileId }
+        val trafficSnapshot = if (connectionActive) readActiveTrafficSnapshot(profileId, mode) else null
         val trafficDescription = when (trafficSnapshot?.state ?: ActiveTrafficState.NOT_CHECKED) {
             ActiveTrafficState.NOT_CHECKED -> app.getString(R.string.auto_vpn_traffic_not_checked)
             ActiveTrafficState.CHECKING -> app.getString(R.string.auto_vpn_traffic_checking)
@@ -537,6 +553,55 @@ object AutoVpnManager {
         }
         val trafficLine = app.getString(R.string.auto_vpn_traffic_status_line, trafficDescription)
         return "${networkStatusText()}\n$trafficLine\n$serviceLines"
+    }
+
+    private fun readActiveTrafficSnapshot(profileId: Long, mode: Int): ActiveTrafficSnapshot? {
+        val safeMode = sanitizeMode(mode)
+        val local = activeTrafficSnapshot?.takeIf { it.profileId == profileId && it.mode == safeMode }
+        val encodedSnapshot = DataStore.autoVpnActiveTrafficSnapshot
+        val persisted = if (encodedSnapshot.isBlank()) null else runCatching {
+            val json = JSONObject(encodedSnapshot)
+            if (json.optLong("profileId", -1L) != profileId || json.optInt("mode", -1) != safeMode) {
+                return@runCatching null
+            }
+            val state = ActiveTrafficState.values().firstOrNull { it.name == json.optString("state") }
+                ?: return@runCatching null
+            ActiveTrafficSnapshot(
+                profileId = profileId,
+                mode = safeMode,
+                state = state,
+                downloadedBytes = json.optLong("downloadedBytes"),
+                expectedBytes = json.optLong("expectedBytes"),
+                bytesPerSecond = if (json.isNull("bytesPerSecond")) null else json.optLong("bytesPerSecond"),
+                checkedAt = json.optLong("checkedAt"),
+            )
+        }.onFailure {
+            DiagnosticLog.warn("auto-vpn", "stored-active-traffic-snapshot-read-failed", it)
+        }.getOrNull()
+        return when {
+            local == null -> persisted
+            persisted == null -> local
+            persisted.checkedAt >= local.checkedAt -> persisted
+            else -> local
+        }
+    }
+
+    private fun updateActiveTrafficSnapshot(snapshot: ActiveTrafficSnapshot) {
+        val safeSnapshot = snapshot.copy(mode = sanitizeMode(snapshot.mode))
+        activeTrafficSnapshot = safeSnapshot
+        runCatching {
+            DataStore.autoVpnActiveTrafficSnapshot = JSONObject()
+                .put("profileId", safeSnapshot.profileId)
+                .put("mode", safeSnapshot.mode)
+                .put("state", safeSnapshot.state.name)
+                .put("downloadedBytes", safeSnapshot.downloadedBytes)
+                .put("expectedBytes", safeSnapshot.expectedBytes)
+                .put("bytesPerSecond", safeSnapshot.bytesPerSecond ?: JSONObject.NULL)
+                .put("checkedAt", safeSnapshot.checkedAt)
+                .toString()
+        }.onFailure {
+            DiagnosticLog.error("auto-vpn", "stored-active-traffic-snapshot-write-failed", it)
+        }
     }
 
     private fun readServiceAvailabilitySnapshot(profileId: Long, mode: Int): ServiceAvailabilitySnapshot? {
@@ -607,7 +672,7 @@ object AutoVpnManager {
 
     private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
         clearPendingExitCountryConfirmation()
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NOT_CHECKED)
+        updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NOT_CHECKED))
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
@@ -646,6 +711,8 @@ object AutoVpnManager {
             serviceAvailabilityResults = emptyList()
             persistServiceAvailabilitySnapshotLocked()
         }
+        activeTrafficSnapshot = null
+        DataStore.autoVpnActiveTrafficSnapshot = ""
     }
 
     private fun scheduleServiceAvailabilityCheck(profileId: Long, mode: Int, force: Boolean = false): Job? {
@@ -1454,8 +1521,10 @@ object AutoVpnManager {
     }
 
     fun resetGeminiRejectedProfiles(): Int {
-        val count = DataStore.autoVpnGeminiRejectedKeys.size
+        val count = maxOf(geminiRejectedKeys().size, geminiRejectedNames().size)
         DataStore.autoVpnGeminiRejectedKeys = emptySet()
+        DataStore.autoVpnGeminiRejectedNames = ""
+        updateGeminiRejectedCache(emptySet(), emptySet(), bumpGeminiRejectedRevision())
         if (DataStore.autoVpnEnabled && DataStore.autoVpnMode == MODE_GEMINI) {
             synchronized(workingPools) {
                 workingPools.remove(MODE_GEMINI)
@@ -1464,7 +1533,7 @@ object AutoVpnManager {
             DataStore.autoVpnReserveIdsGemini = ""
             DataStore.autoVpnReserveCountGemini = 0
             workingCache.clear()
-            scannedIds.remove(MODE_GEMINI)
+            clearGeminiTransientExclusions()
             setAutoReadyStatus(MODE_GEMINI)
         }
         return count
@@ -1633,11 +1702,13 @@ object AutoVpnManager {
         }
         pendingAutoServiceTransition = false
         DataStore.autoVpnServiceStartRequested = false
+        finishDirectSearchSession()
     }
 
     internal fun stopDetachedDirectSearch() {
         pendingAutoServiceTransition = false
         DataStore.autoVpnServiceStartRequested = false
+        finishDirectSearchSession()
         finishAutoProgress()
         setAutoStatus(DataStore.autoVpnMode, R.string.auto_vpn_status_scan_stopped)
     }
@@ -1677,6 +1748,7 @@ object AutoVpnManager {
         DataStore.autoVpnServiceStartRequested = false
         reserveRefillPaused = true
         immediateVerifyGeneration.incrementAndGet()
+        finishDirectSearchSession()
         failures = 0
         monitorJob?.cancel()
         monitorJob = null
@@ -1706,11 +1778,44 @@ object AutoVpnManager {
     fun shouldStartAutoSelectionInsteadOfService(): Boolean {
         return DataStore.autoVpnEnabled &&
                 !pendingAutoServiceTransition &&
-                !DataStore.autoVpnServiceStartRequested
+                !DataStore.autoVpnServiceStartRequested &&
+                !isDirectSearchActive()
     }
 
     fun isServiceTransitionPending(): Boolean {
         return pendingAutoServiceTransition
+    }
+
+    fun beginDirectSearchSession(): Long {
+        val token = maxOf(System.currentTimeMillis(), DataStore.autoVpnDirectSearchToken + 1L)
+        DataStore.autoVpnDirectSearchToken = token
+        DataStore.autoVpnDirectSearchHeartbeat = System.currentTimeMillis()
+        return token
+    }
+
+    fun touchDirectSearchSession(token: Long) {
+        if (token > 0L && DataStore.autoVpnDirectSearchToken == token) {
+            DataStore.autoVpnDirectSearchHeartbeat = System.currentTimeMillis()
+        }
+    }
+
+    fun finishDirectSearchSession(token: Long = 0L) {
+        if (token > 0L && DataStore.autoVpnDirectSearchToken != token) return
+        DataStore.autoVpnDirectSearchToken = 0L
+        DataStore.autoVpnDirectSearchHeartbeat = 0L
+    }
+
+    fun isDirectSearchActive(): Boolean {
+        val token = DataStore.autoVpnDirectSearchToken
+        if (token <= 0L) return false
+        val heartbeat = DataStore.autoVpnDirectSearchHeartbeat
+        if (heartbeat > 0L && System.currentTimeMillis() - heartbeat <= DIRECT_SEARCH_STALE_MS) return true
+        DiagnosticLog.warn(
+            "auto-vpn",
+            "direct-search-session-stale token=$token heartbeatAge=${System.currentTimeMillis() - heartbeat}",
+        )
+        finishDirectSearchSession(token)
+        return false
     }
 
     fun onVpnStarted(
@@ -2301,6 +2406,7 @@ object AutoVpnManager {
             if (!restartAutoScanCycle(safeMode, scannedTotal, testedAnyInCycle)) break
         }
 
+        persistScannedIdsIfNeeded(safeMode, force = true)
         return sortCandidatesByScore(working, safeMode)
     }
 
@@ -2432,6 +2538,7 @@ object AutoVpnManager {
             if (!restartAutoScanCycle(safeMode, scannedTotal, testedAnyInCycle)) break
         }
 
+        persistScannedIdsIfNeeded(safeMode, force = true)
         return sortCandidatesByScore(working, safeMode)
     }
 
@@ -2523,13 +2630,35 @@ object AutoVpnManager {
     private fun deferForMissingDirectNetwork(profileId: Long, mode: Int, trafficTriggered: Boolean) {
         if (!isSameStartedAutoProfile(profileId, mode)) return
         failures = 0
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NETWORK_UNAVAILABLE)
-        setAutoStatus(mode, R.string.auto_vpn_status_underlying_network_unavailable)
+        updateActiveTrafficSnapshot(
+            ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NETWORK_UNAVAILABLE),
+        )
+        setAutoStatus(
+            mode,
+            R.string.auto_vpn_status_no_direct_network_retry,
+            (DIRECT_NETWORK_RETRY_DELAY_MS / 1000L).toInt(),
+        )
         DiagnosticLog.event(
             "auto-vpn",
-            "active-check-deferred-no-underlying-network profile=$profileId mode=$mode " +
-                    "trafficTriggered=$trafficTriggered",
+            "direct-network-unavailable profile=$profileId mode=$mode trafficTriggered=$trafficTriggered",
         )
+        if (directNetworkRetryJob?.isActive == true) return
+        directNetworkRetryJob = runOnDefaultDispatcher {
+            while (isActive && isSameStartedAutoProfile(profileId, mode)) {
+                delay(DIRECT_NETWORK_RETRY_DELAY_MS)
+                if (!isSameStartedAutoProfile(profileId, mode)) break
+                if (!hasDirectInternet()) {
+                    setAutoStatus(
+                        mode,
+                        R.string.auto_vpn_status_no_direct_network_retry,
+                        (DIRECT_NETWORK_RETRY_DELAY_MS / 1000L).toInt(),
+                    )
+                    continue
+                }
+                if (trafficTriggered) diagnoseTrafficSignal(profileId, mode) else checkActiveProfileOnSchedule()
+                break
+            }
+        }
     }
 
     private suspend fun confirmActiveProfileFailure(profileId: Long, mode: Int, reason: String) {
@@ -2602,11 +2731,13 @@ object AutoVpnManager {
         trafficMonitorJob = null
         trafficDiagnosticJob?.cancel()
         trafficDiagnosticJob = null
+        directNetworkRetryJob?.cancel()
+        directNetworkRetryJob = null
         lastTrafficDiagnosticAt = 0L
     }
 
     private fun startTrafficDiagnostic(profileId: Long, mode: Int) {
-        if (trafficDiagnosticJob?.isActive == true) return
+        if (trafficDiagnosticJob?.isActive == true || directNetworkRetryJob?.isActive == true) return
         val now = System.currentTimeMillis()
         if (now - lastTrafficDiagnosticAt < TRAFFIC_DIAGNOSTIC_COOLDOWN_MS) return
         lastTrafficDiagnosticAt = now
@@ -3026,10 +3157,10 @@ object AutoVpnManager {
         source: String,
     ): ActiveVpnTrafficProbe.Result? {
         if (!isSameStartedAutoProfile(profileId, mode)) return null
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.CHECKING)
+        updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.CHECKING))
         notifyAutoStateChanged()
         val proxy = ServiceAvailabilityProbe.activeProfileProxy() ?: run {
-            activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NO_ROUTE)
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NO_ROUTE))
             notifyAutoStateChanged()
             DiagnosticLog.warn(
                 "auto-vpn",
@@ -3037,6 +3168,11 @@ object AutoVpnManager {
             )
             return null
         }
+        DiagnosticLog.event(
+            "auto-vpn",
+            "active-traffic-probe-route profile=$profileId mode=$mode " +
+                    "path=${if (proxy.type() == Proxy.Type.DIRECT) "system-tun" else "core-socks"}",
+        )
         val downloadEnabled = DataStore.autoVpnTrafficDownloadEnabled
         val first = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL, proxy, downloadEnabled)
         val firstSlow = recordTrafficSpeedSample(profileId, first)
@@ -3063,15 +3199,16 @@ object AutoVpnManager {
                 if (accepted) recordTrafficSpeedSample(profileId, first.copy(download = confirmation))
             }
             result = first.copy(downloadConfirmed = accepted)
-            activeTrafficSnapshot = ActiveTrafficSnapshot(
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(
                 profileId = profileId,
+                mode = sanitizeMode(mode),
                 state = if (accepted) ActiveTrafficState.GOOD else ActiveTrafficState.FAILED,
                 downloadedBytes = first.download.downloadedBytes,
                 expectedBytes = first.download.expectedBytes,
                 bytesPerSecond = first.download.bytesPerSecond,
-            )
+            ))
         } else {
-            activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.DISABLED)
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.DISABLED))
         }
         notifyAutoStateChanged()
         if (firstSlow || result.downloadUsable == false) {
@@ -4005,10 +4142,10 @@ object AutoVpnManager {
     private fun rememberGeminiRejectedProfiles(profileIds: Collection<Long>) {
         if (profileIds.isEmpty()) return
         val keys = LinkedHashSet(DataStore.autoVpnGeminiRejectedKeys)
-        profileIds
-            .mapNotNull { SagerDatabase.proxyDao.getById(it) }
-            .flatMap(::profileRejectKeys)
-            .forEach(keys::add)
+        val names = LinkedHashSet(geminiRejectedNames())
+        val profiles = profileIds.mapNotNull { SagerDatabase.proxyDao.getById(it) }
+        profiles.flatMap(::profileRejectKeys).forEach(keys::add)
+        profiles.mapNotNull(::profileRejectName).forEach(names::add)
 
         while (keys.size > MAX_GEMINI_REJECTED_KEYS) {
             val iterator = keys.iterator()
@@ -4016,13 +4153,110 @@ object AutoVpnManager {
             iterator.next()
             iterator.remove()
         }
+        while (names.size > MAX_GEMINI_REJECTED_KEYS) {
+            val iterator = names.iterator()
+            if (!iterator.hasNext()) break
+            iterator.next()
+            iterator.remove()
+        }
         DataStore.autoVpnGeminiRejectedKeys = keys
+        DataStore.autoVpnGeminiRejectedNames = encodeGeminiRejectedNames(names)
+        updateGeminiRejectedCache(keys, names, bumpGeminiRejectedRevision())
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "gemini-rejected-persisted profiles=${profiles.map { it.id }} keys=${keys.size} names=${names.size}",
+        )
     }
 
     private fun isGeminiRejected(profile: ProxyEntity): Boolean {
-        val rejectedKeys = DataStore.autoVpnGeminiRejectedKeys
-        return profileRejectKeys(profile).any(rejectedKeys::contains)
+        if (profileRejectKeys(profile).any(geminiRejectedKeys()::contains)) return true
+        val name = profileRejectName(profile) ?: return false
+        return name in geminiRejectedNames()
     }
+
+    private fun geminiRejectedKeys(): Set<String> {
+        refreshGeminiRejectedCacheIfNeeded()
+        return cachedGeminiRejectedKeys.orEmpty()
+    }
+
+    private fun profileRejectName(profile: ProxyEntity): String? =
+        profile.displayName().trim().takeIf { it.isNotEmpty() }
+
+    private fun geminiRejectedNames(): Set<String> {
+        refreshGeminiRejectedCacheIfNeeded()
+        return cachedGeminiRejectedNames.orEmpty()
+    }
+
+    private fun decodeGeminiRejectedNames(encoded: String): Set<String> {
+        if (encoded.isBlank()) return emptySet()
+        return encoded.split(',')
+            .asSequence()
+            .mapNotNull { value ->
+                runCatching {
+                    String(Base64.decode(value, Base64.NO_WRAP), Charsets.UTF_8)
+                        .takeIf { it.isNotEmpty() }
+                }.getOrNull()
+            }
+            .toCollection(LinkedHashSet())
+    }
+
+    private fun refreshGeminiRejectedCacheIfNeeded() {
+        val revision = geminiRejectedRevision()
+        if (cachedGeminiRejectedRevision == revision &&
+            cachedGeminiRejectedKeys != null &&
+            cachedGeminiRejectedNames != null
+        ) return
+        synchronized(this) {
+            val currentRevision = geminiRejectedRevision()
+            if (cachedGeminiRejectedRevision == currentRevision &&
+                cachedGeminiRejectedKeys != null &&
+                cachedGeminiRejectedNames != null
+            ) return
+            val keys = runCatching { DataStore.autoVpnGeminiRejectedKeys }
+                .getOrElse {
+                    Logs.w(it)
+                    emptySet()
+                }
+            val names = runCatching { decodeGeminiRejectedNames(DataStore.autoVpnGeminiRejectedNames) }
+                .getOrElse {
+                    Logs.w(it)
+                    emptySet()
+                }
+            updateGeminiRejectedCache(keys, names, currentRevision)
+            if (keys.isEmpty() && names.isEmpty()) clearGeminiTransientExclusions()
+        }
+    }
+
+    private fun updateGeminiRejectedCache(keys: Set<String>, names: Set<String>, revision: Long) {
+        cachedGeminiRejectedKeys = keys
+        cachedGeminiRejectedNames = names
+        cachedGeminiRejectedRevision = revision
+    }
+
+    private fun geminiRejectedRevision(): Long =
+        runCatching { DataStore.autoVpnGeminiRejectedRevision }.getOrDefault(0L)
+
+    private fun bumpGeminiRejectedRevision(): Long {
+        val next = maxOf(System.currentTimeMillis(), geminiRejectedRevision() + 1L)
+        DataStore.autoVpnGeminiRejectedRevision = next
+        return next
+    }
+
+    private fun clearGeminiTransientExclusions() {
+        manualCycleIds.remove(MODE_GEMINI)
+        synchronized(scannedIds) {
+            scannedIds.remove(MODE_GEMINI)
+        }
+        clearStoredScannedIds(MODE_GEMINI)
+    }
+
+    private fun encodeGeminiRejectedNames(names: Collection<String>): String =
+        names.asSequence()
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(",") { name ->
+                Base64.encodeToString(name.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            }
 
     private fun rememberExitCountryRejectedProfiles(profileIds: Collection<Long>, reason: String) {
         if (profileIds.isEmpty()) return
@@ -4097,6 +4331,7 @@ object AutoVpnManager {
         listOf(MODE_NON_RU, MODE_GEMINI).forEach { mode ->
             manualCycleIds.remove(mode)
             synchronized(scannedIds) { scannedIds.remove(mode) }
+            clearStoredScannedIds(mode)
             synchronized(workingPools) {
                 workingPools.remove(mode)
                 hydratedReserveModes.remove(mode)
@@ -4252,8 +4487,6 @@ object AutoVpnManager {
             ""
         }
     }
-
-    fun isDirectSearchActive(): Boolean = AutoVpnDirectSearchService.isSearchActive()
 
     private fun isVpnRunningForAuto(): Boolean {
         return SagerNet.started || DataStore.startedProfile > 0L
@@ -4790,25 +5023,91 @@ object AutoVpnManager {
         updateAutoReserve(safeMode)
     }
 
+    private fun storedScannedIds(mode: Int): LinkedHashSet<Long> {
+        val encoded = when (sanitizeMode(mode)) {
+            MODE_NON_RU -> DataStore.autoVpnScannedIdsNonRu
+            MODE_GEMINI -> DataStore.autoVpnScannedIdsGemini
+            else -> DataStore.autoVpnScannedIdsAny
+        }
+        return encoded.split(',')
+            .asSequence()
+            .mapNotNull { it.toLongOrNull() }
+            .filter { it > 0L }
+            .toCollection(LinkedHashSet())
+    }
+
+    private fun persistScannedIds(mode: Int, profileIds: Collection<Long>) {
+        val encoded = profileIds.asSequence()
+            .filter { it > 0L }
+            .distinct()
+            .joinToString(",")
+        when (sanitizeMode(mode)) {
+            MODE_NON_RU -> DataStore.autoVpnScannedIdsNonRu = encoded
+            MODE_GEMINI -> DataStore.autoVpnScannedIdsGemini = encoded
+            else -> DataStore.autoVpnScannedIdsAny = encoded
+        }
+    }
+
+    private fun persistScannedIdsIfNeeded(mode: Int, force: Boolean = false) {
+        val safeMode = sanitizeMode(mode)
+        val now = System.currentTimeMillis()
+        val lastPersist = synchronized(lastScannedIdsPersistAt) {
+            lastScannedIdsPersistAt[safeMode] ?: 0L
+        }
+        val ids = synchronized(scannedIds) {
+            scannedIds.getOrPut(safeMode) { storedScannedIds(safeMode) }.toList()
+        }
+        if (!force && ids.size % 50 != 0 && now - lastPersist < SCANNED_IDS_PERSIST_MIN_INTERVAL_MS) return
+        persistScannedIds(safeMode, ids)
+        synchronized(lastScannedIdsPersistAt) { lastScannedIdsPersistAt[safeMode] = now }
+    }
+
+    private fun scannedCount(mode: Int): Int {
+        val safeMode = sanitizeMode(mode)
+        return synchronized(scannedIds) {
+            scannedIds.getOrPut(safeMode) { storedScannedIds(safeMode) }.size
+        }
+    }
+
+    private fun clearStoredScannedIds(mode: Int? = null) {
+        if (mode == null) {
+            DataStore.autoVpnScannedIdsAny = ""
+            DataStore.autoVpnScannedIdsNonRu = ""
+            DataStore.autoVpnScannedIdsGemini = ""
+            synchronized(lastScannedIdsPersistAt) { lastScannedIdsPersistAt.clear() }
+            return
+        }
+        when (sanitizeMode(mode)) {
+            MODE_NON_RU -> DataStore.autoVpnScannedIdsNonRu = ""
+            MODE_GEMINI -> DataStore.autoVpnScannedIdsGemini = ""
+            else -> DataStore.autoVpnScannedIdsAny = ""
+        }
+        synchronized(lastScannedIdsPersistAt) { lastScannedIdsPersistAt.remove(sanitizeMode(mode)) }
+    }
+
     private fun markScanned(mode: Int, profileId: Long): Boolean {
         if (profileId <= 0L) return false
         val safeMode = sanitizeMode(mode)
-        return synchronized(scannedIds) {
-            scannedIds.getOrPut(safeMode) { LinkedHashSet() }.add(profileId)
+        val added = synchronized(scannedIds) {
+            scannedIds.getOrPut(safeMode) { storedScannedIds(safeMode) }.add(profileId)
         }
+        if (added) persistScannedIdsIfNeeded(safeMode)
+        return added
     }
 
     private suspend fun restartAutoScanCycle(mode: Int, scannedTotal: Int, testedAnyInCycle: Boolean): Boolean {
         val safeMode = sanitizeMode(mode)
         refreshQuarantineState(force = true)
+        val completedStoredCycle = scannedCount(safeMode) >= scannedTotal
         val completedProgressCycle = synchronized(progressLock) {
             autoTotal == scannedTotal && autoFinished >= autoTotal
         }
-        if (scannedTotal <= 0 || (!testedAnyInCycle && !completedProgressCycle)) return false
+        if (scannedTotal <= 0 || (!testedAnyInCycle && !completedStoredCycle && !completedProgressCycle)) return false
         DiagnosticLog.critical(
             "auto-vpn",
             "restart-scan-cycle mode=$safeMode scanned=$scannedTotal testedAny=$testedAnyInCycle " +
                     "completedProgress=$completedProgressCycle " +
+                    "storedScanned=${scannedCount(safeMode)} " +
                     "progress=$autoFinished/$autoTotal working=$autoWorking"
         )
 
@@ -4918,6 +5217,7 @@ object AutoVpnManager {
         synchronized(scannedIds) {
             scannedIds.clear()
         }
+        clearStoredScannedIds()
         lastCheckedPingMillis = null
         lastCheckedPingFailed = false
         persistAutoPing()
@@ -4983,17 +5283,20 @@ object AutoVpnManager {
         syncVisibleStateFromStore()
         if (autoScanJob?.isActive == true) return false
         val safeMode = sanitizeMode(mode)
+        val safeTotal = total.coerceAtLeast(0)
         val retainedWorking = reserveCount(safeMode)
+        val scannedFinished = scannedCount(safeMode).coerceIn(0, safeTotal)
         val stored = storedAutoProgressSnapshot()
         val completedStoredCycle = stored != null &&
                 !stored.running &&
-                stored.total == total.coerceAtLeast(0) &&
-                total > 0 &&
-                stored.finished >= total
+                stored.total == safeTotal &&
+                safeTotal > 0 &&
+                stored.finished >= safeTotal
         if (completedStoredCycle) {
             synchronized(scannedIds) {
                 scannedIds.remove(safeMode)
             }
+            clearStoredScannedIds(safeMode)
             DiagnosticLog.critical(
                 "auto-vpn",
                 "progress-on-demand-new-cycle mode=$safeMode total=$total finished=${stored!!.finished}"
@@ -5001,12 +5304,15 @@ object AutoVpnManager {
             resetAutoProgressForNextCycle(safeMode, total)
             return true
         }
-        if (stored?.running == true && stored.total == total.coerceAtLeast(0)) {
+        if (stored != null &&
+            stored.total == safeTotal &&
+            (stored.running || stored.finished > 0 || scannedFinished > 0)
+        ) {
             synchronized(progressLock) {
                 autoProgressGeneration = maxOf(autoProgressGeneration, stored.generation)
                 autoRunning = true
-                autoTotal = stored.total
-                autoFinished = stored.finished.coerceIn(0, stored.total)
+                autoTotal = safeTotal
+                autoFinished = maxOf(stored.finished, scannedFinished).coerceIn(0, safeTotal)
                 autoDisplayedFinished = autoFinished
                 autoWorking = maxOf(stored.working, retainedWorking)
                 lastAutoProgressNotifyAt = 0L
@@ -5016,13 +5322,14 @@ object AutoVpnManager {
                 "progress-on-demand-resume mode=$safeMode total=$autoTotal " +
                         "finished=$autoFinished working=$autoWorking"
             )
+            persistAutoProgress()
             notifyAutoStateChanged()
             return true
         }
         synchronized(progressLock) {
             beginAutoProgressGenerationLocked()
             autoRunning = true
-            autoTotal = total.coerceAtLeast(0)
+            autoTotal = safeTotal
             autoFinished = 0
             autoDisplayedFinished = 0
             autoWorking = retainedWorking

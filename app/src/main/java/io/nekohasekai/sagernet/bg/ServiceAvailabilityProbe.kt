@@ -74,6 +74,13 @@ internal object ServiceAvailabilityProbe {
     suspend fun checkAll(renderGeminiPage: Boolean = false): List<Result> = coroutineScope {
         val renderedGeminiRouteAvailable = renderGeminiPage && supportsRenderedGeminiRoute()
         val proxy = activeProfileProxy()
+        if (proxy != null) {
+            DiagnosticLog.event(
+                "auto-vpn-services",
+                "availability-probe-route profile=${DataStore.startedProfile} mode=${DataStore.autoVpnMode} " +
+                        "path=${if (proxy.type() == Proxy.Type.DIRECT) "system-tun" else "core-socks"}",
+            )
+        }
         if (proxy == null && !renderedGeminiRouteAvailable) {
             if (renderGeminiPage) {
                 DiagnosticLog.event(
@@ -116,18 +123,16 @@ internal object ServiceAvailabilityProbe {
 
     internal fun activeProfileProxy(): Proxy? {
         if (DataStore.serviceMode != Key.MODE_VPN) return null
+        val selfExcludedFromAppVpn = DataStore.proxyApps && DataStore.bypass &&
+                DataStore.individual.split('\n').any { it.trim() == SagerNet.application.packageName }
+        if (DataStore.tunImplementation == TunImplementation.SYSTEM) {
+            return if (selfExcludedFromAppVpn) null else Proxy.NO_PROXY
+        }
         if (DataStore.requireSocks) {
             if (DataStore.socksUsername.isNotEmpty() || DataStore.socksPassword.isNotEmpty()) return null
             return Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", DataStore.socksPort))
         }
-
-        val selfExcludedFromAppVpn = DataStore.proxyApps && DataStore.bypass &&
-                DataStore.individual.split('\n').any { it.trim() == SagerNet.application.packageName }
-        return if (DataStore.tunImplementation == TunImplementation.SYSTEM && !selfExcludedFromAppVpn) {
-            Proxy.NO_PROXY
-        } else {
-            null
-        }
+        return null
     }
 
     suspend fun checkGoogle(): Result {

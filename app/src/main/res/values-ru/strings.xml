@@ -701,7 +701,7 @@
     <string name="auto_vpn_status_rechecking_reserve">%1$s: перепроверяю запасные профили: %2$d</string>
     <string name="auto_vpn_status_verifying_connected">%1$s: проверка после подключения, попытка %2$d из %3$d...</string>
     <string name="auto_vpn_status_checking_active">%1$s: проверяю активный профиль...</string>
-    <string name="auto_vpn_status_underlying_network_unavailable">%1$s: обычная сеть недоступна, оставляю текущий профиль</string>
+    <string name="auto_vpn_status_no_direct_network_retry">%1$s: прямой интернет недоступен, повтор через %2$d сек...</string>
     <string name="auto_vpn_status_active_issue">%1$s: активный профиль не прошёл %2$d/%3$d</string>
     <string name="auto_vpn_status_active_bad_ping">%1$s: активный пинг %2$d мс выше %3$d мс</string>
     <string name="auto_vpn_status_active_bad_ping_count">%1$s: активный пинг %2$d мс выше %3$d мс, неудача %4$d/%5$d</string>

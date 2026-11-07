@@ -443,7 +443,7 @@
     <string name="auto_vpn_status_rechecking_reserve">%1$s: rechecking %2$d reserve profiles...</string>
     <string name="auto_vpn_status_verifying_connected">%1$s: post-connect check, attempt %2$d of %3$d...</string>
     <string name="auto_vpn_status_checking_active">%1$s: checking active profile...</string>
-    <string name="auto_vpn_status_underlying_network_unavailable">%1$s: underlying network unavailable; keeping current profile</string>
+    <string name="auto_vpn_status_no_direct_network_retry">%1$s: no direct internet, retrying in %2$d sec...</string>
     <string name="auto_vpn_status_active_issue">%1$s: active profile failed %2$d/%3$d</string>
     <string name="auto_vpn_status_active_bad_ping">%1$s: active ping %2$d ms is above %3$d ms</string>
     <string name="auto_vpn_status_active_bad_ping_count">%1$s: active ping %2$d ms is above %3$d ms, failed %4$d/%5$d</string>
