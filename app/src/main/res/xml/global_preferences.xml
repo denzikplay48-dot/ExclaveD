@@ -349,7 +349,7 @@
             app:title="@string/auto_vpn_switch_cooldown_seconds"
             app:useSimpleSummaryProvider="true" />
         <EditTextPreference
-            app:defaultValue="45"
+            app:defaultValue="135"
             app:icon="@drawable/ic_baseline_timelapse_24"
             app:key="autoVpnQuarantineMinutes"
             app:title="@string/auto_vpn_quarantine_minutes"

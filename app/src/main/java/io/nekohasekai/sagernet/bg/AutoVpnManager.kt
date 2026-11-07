@@ -67,6 +67,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.IDN
+import java.net.Proxy
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -177,10 +178,12 @@ object AutoVpnManager {
 
     private data class ActiveTrafficSnapshot(
         val profileId: Long,
+        val mode: Int,
         val state: ActiveTrafficState,
         val downloadedBytes: Long = 0L,
         val expectedBytes: Long = 0L,
         val bytesPerSecond: Long? = null,
+        val checkedAt: Long = System.currentTimeMillis(),
     )
 
     private data class AutoProgressSnapshot(
@@ -569,7 +572,7 @@ object AutoVpnManager {
                 app.getString(statusRes),
             )
         }
-        val trafficSnapshot = activeTrafficSnapshot?.takeIf { connectionActive && it.profileId == profileId }
+        val trafficSnapshot = if (connectionActive) readActiveTrafficSnapshot(profileId, mode) else null
         val trafficDescription = when (trafficSnapshot?.state ?: ActiveTrafficState.NOT_CHECKED) {
             ActiveTrafficState.NOT_CHECKED -> app.getString(R.string.auto_vpn_traffic_not_checked)
             ActiveTrafficState.CHECKING -> app.getString(R.string.auto_vpn_traffic_checking)
@@ -588,6 +591,55 @@ object AutoVpnManager {
         }
         val trafficLine = app.getString(R.string.auto_vpn_traffic_status_line, trafficDescription)
         return "${networkStatusText()}\n$trafficLine\n$serviceLines"
+    }
+
+    private fun readActiveTrafficSnapshot(profileId: Long, mode: Int): ActiveTrafficSnapshot? {
+        val safeMode = sanitizeMode(mode)
+        val local = activeTrafficSnapshot?.takeIf { it.profileId == profileId && it.mode == safeMode }
+        val encodedSnapshot = DataStore.autoVpnActiveTrafficSnapshot
+        val persisted = if (encodedSnapshot.isBlank()) null else runCatching {
+            val json = JSONObject(encodedSnapshot)
+            if (json.optLong("profileId", -1L) != profileId || json.optInt("mode", -1) != safeMode) {
+                return@runCatching null
+            }
+            val state = ActiveTrafficState.values().firstOrNull { it.name == json.optString("state") }
+                ?: return@runCatching null
+            ActiveTrafficSnapshot(
+                profileId = profileId,
+                mode = safeMode,
+                state = state,
+                downloadedBytes = json.optLong("downloadedBytes"),
+                expectedBytes = json.optLong("expectedBytes"),
+                bytesPerSecond = if (json.isNull("bytesPerSecond")) null else json.optLong("bytesPerSecond"),
+                checkedAt = json.optLong("checkedAt"),
+            )
+        }.onFailure {
+            DiagnosticLog.warn("auto-vpn", "stored-active-traffic-snapshot-read-failed", it)
+        }.getOrNull()
+        return when {
+            local == null -> persisted
+            persisted == null -> local
+            persisted.checkedAt >= local.checkedAt -> persisted
+            else -> local
+        }
+    }
+
+    private fun updateActiveTrafficSnapshot(snapshot: ActiveTrafficSnapshot) {
+        val safeSnapshot = snapshot.copy(mode = sanitizeMode(snapshot.mode))
+        activeTrafficSnapshot = safeSnapshot
+        runCatching {
+            DataStore.autoVpnActiveTrafficSnapshot = JSONObject()
+                .put("profileId", safeSnapshot.profileId)
+                .put("mode", safeSnapshot.mode)
+                .put("state", safeSnapshot.state.name)
+                .put("downloadedBytes", safeSnapshot.downloadedBytes)
+                .put("expectedBytes", safeSnapshot.expectedBytes)
+                .put("bytesPerSecond", safeSnapshot.bytesPerSecond ?: JSONObject.NULL)
+                .put("checkedAt", safeSnapshot.checkedAt)
+                .toString()
+        }.onFailure {
+            DiagnosticLog.error("auto-vpn", "stored-active-traffic-snapshot-write-failed", it)
+        }
     }
 
     private fun readServiceAvailabilitySnapshot(profileId: Long, mode: Int): ServiceAvailabilitySnapshot? {
@@ -658,7 +710,7 @@ object AutoVpnManager {
 
     private fun resetServiceAvailabilityForConnection(profileId: Long, mode: Int) {
         clearPendingExitCountryConfirmation()
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NOT_CHECKED)
+        updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NOT_CHECKED))
         synchronized(serviceAvailabilityLock) {
             serviceAvailabilityJob?.cancel()
             serviceAvailabilityJob = null
@@ -697,6 +749,8 @@ object AutoVpnManager {
             serviceAvailabilityResults = emptyList()
             persistServiceAvailabilitySnapshotLocked()
         }
+        activeTrafficSnapshot = null
+        DataStore.autoVpnActiveTrafficSnapshot = ""
     }
 
     private fun scheduleServiceAvailabilityCheck(profileId: Long, mode: Int, force: Boolean = false): Job? {
@@ -2813,7 +2867,9 @@ object AutoVpnManager {
     private fun deferForMissingDirectNetwork(profileId: Long, mode: Int, trafficTriggered: Boolean) {
         if (!isSameStartedAutoProfile(profileId, mode)) return
         failures = 0
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NETWORK_UNAVAILABLE)
+        updateActiveTrafficSnapshot(
+            ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NETWORK_UNAVAILABLE),
+        )
         setAutoStatus(
             mode,
             R.string.auto_vpn_status_no_direct_network_retry,
@@ -3219,10 +3275,10 @@ object AutoVpnManager {
         source: String,
     ): ActiveVpnTrafficProbe.Result? {
         if (!isSameStartedAutoProfile(profileId, mode)) return null
-        activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.CHECKING)
+        updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.CHECKING))
         notifyAutoStateChanged()
         val proxy = ServiceAvailabilityProbe.activeProfileProxy() ?: run {
-            activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.NO_ROUTE)
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.NO_ROUTE))
             notifyAutoStateChanged()
             DiagnosticLog.warn(
                 "auto-vpn",
@@ -3230,6 +3286,11 @@ object AutoVpnManager {
             )
             return null
         }
+        DiagnosticLog.event(
+            "auto-vpn",
+            "active-traffic-probe-route profile=$profileId mode=$mode " +
+                    "path=${if (proxy.type() == Proxy.Type.DIRECT) "system-tun" else "core-socks"}",
+        )
         val downloadEnabled = DataStore.autoVpnTrafficDownloadEnabled
         val first = ActiveVpnTrafficProbe.run(DataStore.connectionTestURL, proxy, downloadEnabled)
         val firstSlow = recordTrafficSpeedSample(profileId, first)
@@ -3256,15 +3317,16 @@ object AutoVpnManager {
                 if (accepted) recordTrafficSpeedSample(profileId, first.copy(download = confirmation))
             }
             result = first.copy(downloadConfirmed = accepted)
-            activeTrafficSnapshot = ActiveTrafficSnapshot(
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(
                 profileId = profileId,
+                mode = sanitizeMode(mode),
                 state = if (accepted) ActiveTrafficState.GOOD else ActiveTrafficState.FAILED,
                 downloadedBytes = first.download.downloadedBytes,
                 expectedBytes = first.download.expectedBytes,
                 bytesPerSecond = first.download.bytesPerSecond,
-            )
+            ))
         } else {
-            activeTrafficSnapshot = ActiveTrafficSnapshot(profileId, ActiveTrafficState.DISABLED)
+            updateActiveTrafficSnapshot(ActiveTrafficSnapshot(profileId, sanitizeMode(mode), ActiveTrafficState.DISABLED))
         }
         notifyAutoStateChanged()
         if (firstSlow || result.downloadUsable == false) {

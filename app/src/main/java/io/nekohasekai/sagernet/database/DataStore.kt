@@ -155,6 +155,13 @@ object DataStore : OnPreferenceDataStoreChangeListener {
             }
             configurationStore.putBoolean(Key.AUTO_VPN_SINGLE_FAILURE_DEFAULT_MIGRATION, true)
         }
+        if (configurationStore.getBoolean(Key.AUTO_VPN_QUARANTINE_135_DEFAULT_MIGRATION) != true) {
+            val savedQuarantineMinutes = configurationStore.getString(Key.AUTO_VPN_QUARANTINE_MINUTES)?.toIntOrNull()
+            if (savedQuarantineMinutes == null || savedQuarantineMinutes == 45) {
+                configurationStore.putString(Key.AUTO_VPN_QUARANTINE_MINUTES, "135")
+            }
+            configurationStore.putBoolean(Key.AUTO_VPN_QUARANTINE_135_DEFAULT_MIGRATION, true)
+        }
         configurationStore.remove("autoVpnGeminiTestUrl")
         configurationStore.remove("autoVpnLastExitIp")
         configurationStore.remove("autoVpnLastExitIpProfile")
@@ -399,7 +406,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnInitialSelectionTimeoutSeconds by configurationStore.stringToInt(Key.AUTO_VPN_INITIAL_SELECTION_TIMEOUT_SECONDS) { 60 }
     var autoVpnLiteMode by configurationStore.boolean(Key.AUTO_VPN_LITE_MODE) { true }
     var autoVpnSwitchCooldownSeconds by configurationStore.stringToInt(Key.AUTO_VPN_SWITCH_COOLDOWN_SECONDS) { 0 }
-    var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 45 }
+    var autoVpnQuarantineMinutes by configurationStore.stringToInt(Key.AUTO_VPN_QUARANTINE_MINUTES) { 135 }
     var autoVpnQuarantineRevision by configurationStore.long(Key.AUTO_VPN_QUARANTINE_REVISION)
     fun autoVpnQuarantineEntries(): Map<Long, Long> {
         val prefix = Key.AUTO_VPN_QUARANTINE_PROFILE_PREFIX
@@ -467,6 +474,7 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var autoVpnScannedIdsGemini by configurationStore.string(Key.AUTO_VPN_SCANNED_IDS_GEMINI)
     var autoVpnServiceStartRequested by configurationStore.boolean(Key.AUTO_VPN_SERVICE_START_REQUESTED)
     var autoVpnServiceAvailabilitySnapshot by configurationStore.string(Key.AUTO_VPN_SERVICE_AVAILABILITY_SNAPSHOT)
+    var autoVpnActiveTrafficSnapshot by configurationStore.string(Key.AUTO_VPN_ACTIVE_TRAFFIC_SNAPSHOT)
     var autoVpnSiteSwitchFilters by configurationStore.stringSet(Key.AUTO_VPN_SITE_SWITCH_FILTERS) {
         setOf("GOOGLE", "YOUTUBE", "CHATGPT", "TELEGRAM")
     }
