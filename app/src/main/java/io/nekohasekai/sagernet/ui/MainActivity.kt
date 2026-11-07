@@ -794,7 +794,6 @@ class MainActivity : ThemedActivity(),
         scheduleReleaseUpdateCheck()
         maybeRestoreAutoConnection("main-activity-resume")
         AutoVpnManager.refreshNetworkStatus("main-activity-resume")
-        AutoVpnManager.refreshServiceAvailabilityOnAppResume()
     }
 
     private fun maybeRestoreAutoConnection(source: String) {
