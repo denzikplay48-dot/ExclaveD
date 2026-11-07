@@ -702,22 +702,29 @@ class MainActivity : ThemedActivity(),
     }
 
     val connection = SagerConnection(true)
+    private var serviceStateKnown = false
     override fun onServiceConnected(service: ISagerNetService) = changeState(try {
+        serviceStateKnown = true
         BaseService.State.entries[service.state].also {
             SagerNet.started = it.canStop
             DiagnosticLog.critical("ui", "service-connected state=$it ${DiagnosticLog.stateSummary()}")
         }
     } catch (e: RemoteException) {
+        serviceStateKnown = false
         DiagnosticLog.warn("ui", "service-connected-state-read-failed", e)
         BaseService.State.Idle
     }).also { maybeRestoreAutoConnection("service-connected") }
 
     override fun onServiceDisconnected() {
+        serviceStateKnown = false
         DiagnosticLog.critical("ui", "service-disconnected ${DiagnosticLog.stateSummary()}")
         changeState(BaseService.State.Idle)
     }
     override fun onBinderDied() {
         DiagnosticLog.critical("ui", "service-binder-died ${DiagnosticLog.stateSummary()}")
+        serviceStateKnown = false
+        SagerNet.started = false
+        autoConnectRestoreAttempted = false
         connection.disconnect(this)
         connection.connect(this, this)
     }
@@ -789,9 +796,39 @@ class MainActivity : ThemedActivity(),
     }
 
     private fun maybeRestoreAutoConnection(source: String) {
-        if (autoConnectRestoreAttempted || !DataStore.persistAcrossReboot || DataStore.currentProfile <= 0L) return
+        if (autoConnectRestoreAttempted || !serviceStateKnown) return
         if (state != BaseService.State.Stopped && state != BaseService.State.Idle) return
         if (AutoVpnManager.isDirectSearchActive()) return
+
+        val interruptedAutoProfile = DataStore.startedProfile.takeIf { DataStore.autoVpnEnabled && it > 0L }
+        if (interruptedAutoProfile != null) {
+            autoConnectRestoreAttempted = true
+            DataStore.selectedProxy = interruptedAutoProfile
+            DataStore.startedProfile = 0L
+            DataStore.autoVpnServiceStartRequested = true
+            AutoVpnManager.prepareServiceRecovery(interruptedAutoProfile)
+            DiagnosticLog.critical(
+                "boot",
+                "auto-vpn-service-recovery source=$source profile=$interruptedAutoProfile " +
+                        "progress=${DataStore.autoVpnProgressFinished}/${DataStore.autoVpnProgressTotal}"
+            )
+            binding.root.post {
+                if (!isFinishing && !isDestroyed && DataStore.autoVpnEnabled &&
+                    state in listOf(BaseService.State.Stopped, BaseService.State.Idle) &&
+                    !AutoVpnManager.isDirectSearchActive()
+                ) {
+                    runCatching { SagerNet.startService() }
+                        .onFailure {
+                            autoConnectRestoreAttempted = false
+                            DataStore.autoVpnServiceStartRequested = false
+                            DiagnosticLog.error("boot", "auto-vpn-service-recovery-start-failed", it)
+                        }
+                }
+            }
+            return
+        }
+
+        if (!DataStore.persistAcrossReboot || DataStore.currentProfile <= 0L) return
 
         autoConnectRestoreAttempted = true
         DiagnosticLog.critical(

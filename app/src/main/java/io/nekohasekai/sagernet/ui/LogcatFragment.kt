@@ -61,9 +61,13 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     @Volatile private var logcatProcess: Process? = null
     private var diagnosticJournalSelected = false
     private var viewAvailable = false
+    private var logcatScrollGeneration = 0L
 
     companion object {
         private const val MAX_VISIBLE_LOG_LINES = 2_000
+        private const val MAX_VISIBLE_LOGCAT_LINES = 1_500
+        private const val MAX_LOGCAT_BATCH_LINES = 200
+        private const val LOGCAT_BATCH_INTERVAL_NS = 500_000_000L
         private const val MAX_INITIAL_JOURNAL_BYTES = 1024 * 1024
         private const val MAX_LOGCAT_AGE_MS = 10L * 60L * 1000L
         private const val LOGCAT_AGE_TRIM_INTERVAL_MS = 30_000L
@@ -125,6 +129,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
     }
 
     private fun stopLogStream() {
+        logcatScrollGeneration++
         val job = streamJob
         val process = logcatProcess
         logcatProcess = null
@@ -174,6 +179,56 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         }
     }
 
+    private fun appendLogcatUpdate(chunk: CharSequence) {
+        if (chunk.isEmpty()) return
+        val scrollView = binding.logsScrollView
+        val textView = binding.logsTextView
+        val oldScrollY = scrollView.scrollY
+        val wasAtBottom = scrollView.childCount == 0 || !scrollView.canScrollVertically(1)
+
+        textView.append(chunk)
+        val currentText = textView.text
+        val lineCount = currentText.count { it == '\n' } +
+                if (currentText.isNotEmpty() && currentText.last() != '\n') 1 else 0
+        val excessLines = lineCount - MAX_VISIBLE_LOGCAT_LINES
+        if (excessLines > 0) {
+            val trimmed = SpannableStringBuilder(currentText)
+            var removedLines = 0
+            var trimOffset = 0
+            for (index in 0 until trimmed.length) {
+                if (trimmed[index] == '\n') {
+                    removedLines++
+                    if (removedLines == excessLines) {
+                        trimOffset = index + 1
+                        break
+                    }
+                }
+            }
+            if (trimOffset > 0) {
+                trimmed.delete(0, trimOffset)
+                textView.text = trimmed
+            }
+        }
+        scheduleLogcatScroll(scrollView, oldScrollY, wasAtBottom)
+    }
+
+    private fun scheduleLogcatScroll(
+        scrollView: androidx.core.widget.NestedScrollView,
+        oldScrollY: Int,
+        wasAtBottom: Boolean,
+    ) {
+        val generation = ++logcatScrollGeneration
+        scrollView.post {
+            if (!viewAvailable || generation != logcatScrollGeneration || scrollView.scrollY != oldScrollY) return@post
+            if (wasAtBottom) {
+                scrollView.fullScroll(View.FOCUS_DOWN)
+            } else {
+                val maxScroll = (scrollView.getChildAt(0).height - scrollView.height).coerceAtLeast(0)
+                scrollView.scrollTo(0, oldScrollY.coerceAtMost(maxScroll))
+            }
+        }
+    }
+
     private fun logcatAgeTrimOffset(text: CharSequence): Int {
         val cutoff = System.currentTimeMillis() - MAX_LOGCAT_AGE_MS
         var lineStart = 0
@@ -209,22 +264,13 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val scrollView = binding.logsScrollView
         val textView = binding.logsTextView
         val oldScrollY = scrollView.scrollY
-        val wasAtBottom = scrollView.childCount == 0 ||
-                scrollView.getChildAt(0).bottom <= oldScrollY + scrollView.height + dp2px(24)
+        val wasAtBottom = scrollView.childCount == 0 || !scrollView.canScrollVertically(1)
         val trimmed = SpannableStringBuilder(textView.text)
         val trimOffset = logcatAgeTrimOffset(trimmed)
         if (trimOffset <= 0) return
         trimmed.delete(0, trimOffset)
         textView.text = trimmed
-        scrollView.post {
-            if (!viewAvailable || diagnosticJournalSelected) return@post
-            if (wasAtBottom) {
-                scrollView.fullScroll(View.FOCUS_DOWN)
-            } else {
-                val maxScroll = (scrollView.getChildAt(0).height - scrollView.height).coerceAtLeast(0)
-                scrollView.scrollTo(0, oldScrollY.coerceAtMost(maxScroll))
-            }
-        }
+        scheduleLogcatScroll(scrollView, oldScrollY, wasAtBottom)
     }
 
     private fun startLogcatStream() {
@@ -232,6 +278,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         diagnosticJournalSelected = false
         updateJournalMenuTitle()
         binding.logsTextView.text = ""
+        binding.logsScrollView.scrollTo(0, 0)
         startLogcatAgeTrim()
         streamJob = runOnIoDispatcher {
             try {
@@ -260,7 +307,7 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val process = try {
             ProcessBuilder(
                 listOf("logcat",
-                    "-T", "2048",
+                    "-T", MAX_VISIBLE_LOGCAT_LINES.toString(),
                     "-v", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         "threadtime,year,zone,color"
                     } else {
@@ -288,8 +335,6 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
         val stdout = BufferedReader(InputStreamReader(process.inputStream))
         val bufferedLogLines = arrayListOf<String>()
         var timeLastNotify = System.nanoTime()
-        // The timeout is initially small so that the view gets populated immediately.
-        var timeout = 1000000000L / 2
         try {
             while (true) {
                 val line = try {
@@ -303,17 +348,15 @@ class LogcatFragment : ToolbarFragment(R.layout.layout_logcat),
                 bufferedLogLines.add(line)
                 val timeNow = System.nanoTime()
                 if (
-                    bufferedLogLines.size < (1 shl 14) - 1 &&
-                    (timeNow - timeLastNotify) < timeout && stdout.ready()
+                    bufferedLogLines.size < MAX_LOGCAT_BATCH_LINES &&
+                    (timeNow - timeLastNotify) < LOGCAT_BATCH_INTERVAL_NS && stdout.ready()
                 ) continue
 
-                // Increase the timeout after the initial view has something in it.
-                timeout = 1000000000L * 5 / 2
                 timeLastNotify = timeNow
 
                 onMainDispatcher {
                     if (!viewAvailable || diagnosticJournalSelected) return@onMainDispatcher
-                    appendLogUpdate(
+                    appendLogcatUpdate(
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             ColorUtils.ansiEscapeToSpannable(binding.root.context,
                                 bufferedLogLines.joinToString(separator = "\n", postfix = "\n")

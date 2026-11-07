@@ -430,11 +430,15 @@
     <string name="auto_vpn_status_selecting">%1$s: selecting profile...</string>
     <string name="auto_vpn_status_prechecking_candidate">%1$s: prechecking %2$s...</string>
     <string name="auto_vpn_status_initial_search">%1$s: starting VPN, searching candidates first...</string>
+    <string name="auto_vpn_status_recovering_service">%1$s: VPN service interrupted; reconnecting and resuming the saved search...</string>
     <string name="auto_vpn_status_initial_found">%1$s: found %2$d/%3$d candidates</string>
     <string name="auto_vpn_status_testing_more">%1$s: testing more profiles...</string>
     <string name="auto_vpn_status_refilling_reserve">%1$s: refilling the reserve over the direct network (%2$d/%3$d)</string>
+    <string name="auto_vpn_status_refill_retry">%1$s: reserve search hit a temporary error; retrying in %2$d sec...</string>
     <string name="auto_vpn_status_refill_direct_unavailable">%1$s: reserve refill paused; direct VPN bypass is unavailable</string>
     <string name="auto_vpn_status_clearing_quarantine">%1$s: clearing quarantine before the next round...</string>
+    <string name="auto_vpn_status_cycle_checking_vpn">%1$s: checking Internet through the active VPN before subscription refresh...</string>
+    <string name="auto_vpn_status_cycle_stopping_vpn">%1$s: active VPN has no Internet; stopping it before subscription refresh...</string>
     <string name="auto_vpn_status_restart_scan">%1$s: starting another scan round...</string>
     <string name="auto_vpn_status_updating_subscriptions">%1$s: updating subscriptions, processed %2$d/%3$d</string>
     <string name="auto_vpn_status_no_subscriptions">%1$s: no subscriptions to update</string>

@@ -89,6 +89,7 @@ object AutoVpnManager {
     private const val AUTO_SCAN_PAGE_SIZE = 200
     private const val AUTO_SCAN_NEXT_CYCLE_DELAY_MS = 1000L
     private const val CYCLE_STATUS_VISIBLE_DELAY_MS = 750L
+    private const val CYCLE_VPN_STOP_TIMEOUT_MS = 15_000L
     private const val SCANNED_IDS_PERSIST_MIN_INTERVAL_MS = 5000L
     private const val DIRECT_SEARCH_STALE_MS = 45_000L
     private const val DIRECT_TEST_VPN_SETTLE_DELAY_MS = 2000L
@@ -388,6 +389,8 @@ object AutoVpnManager {
     private var lastDecisionReason: String? = null
     @Volatile
     private var pendingAutoServiceTransition = false
+    @Volatile
+    private var cycleVpnPauseInProgress = false
     @Volatile
     private var notificationStatus: String? = null
     @Volatile
@@ -821,6 +824,24 @@ object AutoVpnManager {
                 serviceAvailabilityResults.toList()
             } else null
         }
+    }
+
+    private fun shouldCheckSitesAfterTraffic(
+        active: ActiveCheckResult,
+        profileId: Long,
+        mode: Int,
+        source: String,
+    ): Boolean {
+        val trafficFailed = active.trafficPathAvailable == false ||
+                (DataStore.autoVpnTrafficDownloadEnabled && active.downloadComplete == false)
+        if (trafficFailed) {
+            DiagnosticLog.event(
+                "site-availability",
+                "site-check-skipped profile=$profileId mode=$mode source=$source reason=traffic-probe-failed",
+            )
+            return false
+        }
+        return true
     }
 
     fun networkStatusText(): String = app.getString(networkStatusStringId)
@@ -1752,9 +1773,13 @@ object AutoVpnManager {
         failures = 0
         monitorJob?.cancel()
         monitorJob = null
-        synchronized(reserveRefillLock) {
-            reserveRefillJob?.cancel()
-            reserveRefillJob = null
+        if (cycleVpnPauseInProgress) {
+            DiagnosticLog.event("auto-vpn", "reserve-refill-preserved-for-cycle-network-refresh")
+        } else {
+            synchronized(reserveRefillLock) {
+                reserveRefillJob?.cancel()
+                reserveRefillJob = null
+            }
         }
         immediateVerifyJob?.cancel()
         immediateVerifyJob = null
@@ -1848,6 +1873,17 @@ object AutoVpnManager {
         scheduleReserveRefill(DataStore.startedProfile, DataStore.autoVpnMode)
     }
 
+    fun prepareServiceRecovery(profileId: Long) {
+        if (!DataStore.autoVpnEnabled || profileId <= 0L) return
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "service-recovery-request profile=$profileId mode=${sanitizeMode(DataStore.autoVpnMode)} " +
+                    "progress=${DataStore.autoVpnProgressFinished}/${DataStore.autoVpnProgressTotal} " +
+                    "progressRunning=${DataStore.autoVpnProgressRunning}"
+        )
+        setAutoStatus(DataStore.autoVpnMode, R.string.auto_vpn_status_recovering_service)
+    }
+
     fun testActiveUrl(): Int {
         val proxy = ServiceAvailabilityProbe.activeProfileProxy()
             ?: throw IOException("Active VPN route is unavailable")
@@ -1889,15 +1925,27 @@ object AutoVpnManager {
 
     private fun scheduleReserveRefill(profileId: Long, mode: Int) {
         val safeMode = sanitizeMode(mode)
-        if (profileId <= 0L || reserveRefillPaused ||
-            !isSameStartedAutoProfile(profileId, safeMode) || reserveCount(safeMode) >= reserveTarget()
-        ) return
+        if (profileId <= 0L || reserveRefillPaused || !isSameStartedAutoProfile(profileId, safeMode)) return
+        if (reserveCount(safeMode) >= reserveTarget()) {
+            if (!isDirectSearchActive() && autoScanJob?.isActive != true && reserveRefillJob?.isActive != true &&
+                (storedAutoProgressSnapshot()?.running ?: DataStore.autoVpnProgressRunning)
+            ) {
+                DiagnosticLog.event(
+                    "auto-vpn",
+                    "stale-refill-progress-finished profile=$profileId mode=$safeMode " +
+                            "reserve=${reserveCount(safeMode)}/${reserveTarget()}"
+                )
+                finishAutoProgress()
+            }
+            return
+        }
 
         synchronized(reserveRefillLock) {
             if (reserveRefillPaused || reserveRefillJob?.isActive == true) return
             reserveRefillJob = runOnDefaultDispatcher {
                 var progressStarted = false
                 var preserveStatus = false
+                var retryAfterFailure = false
                 try {
                     val connectCheck = immediateVerifyJob
                     if (connectCheck != null && connectCheck !== currentCoroutineContext()[Job]) {
@@ -2000,8 +2048,14 @@ object AutoVpnManager {
                     throw e
                 } catch (e: Exception) {
                     preserveStatus = true
+                    retryAfterFailure = true
                     DiagnosticLog.error("auto-vpn", "reserve-refill-failed profile=$profileId mode=$safeMode", e)
                     Logs.w(e)
+                    setAutoStatus(
+                        safeMode,
+                        R.string.auto_vpn_status_refill_retry,
+                        (DIRECT_NETWORK_RETRY_DELAY_MS / 1000L).toInt(),
+                    )
                 } finally {
                     val job = currentCoroutineContext()[Job]
                     val stillActive = currentCoroutineContext().isActive
@@ -2011,6 +2065,12 @@ object AutoVpnManager {
                     }
                     synchronized(reserveRefillLock) {
                         if (reserveRefillJob === job) reserveRefillJob = null
+                    }
+                    if (retryAfterFailure && stillActive && isSameStartedAutoProfile(profileId, safeMode)) {
+                        runOnDefaultDispatcher {
+                            delay(DIRECT_NETWORK_RETRY_DELAY_MS)
+                            scheduleReserveRefill(profileId, safeMode)
+                        }
                     }
                 }
             }
@@ -2510,7 +2570,8 @@ object AutoVpnManager {
                             )
                         }
 
-                        if (connectFirst && !connected) {
+                        val reconnectAfterCyclePause = showReserveRefill && !connected && !isVpnRunningForAuto()
+                        if ((connectFirst && !connected) || reconnectAfterCyclePause) {
                             val best = chooseBestCandidate(working, safeMode) ?: tested.first()
                             switchMutex.withLock {
                                 if (DataStore.autoVpnEnabled && DataStore.autoVpnMode == safeMode) {
@@ -2519,10 +2580,10 @@ object AutoVpnManager {
                                         mode = safeMode,
                                         excludedIds = dynamicExcluded,
                                         forceTest = true,
-                                        startIfStopped = startIfStopped,
+                                        startIfStopped = startIfStopped || reconnectAfterCyclePause,
                                         feedback = feedback,
                                         recordManualCycle = false,
-                                        switchReason = "reserve-fill",
+                                        switchReason = if (reconnectAfterCyclePause) "cycle-recovery" else "reserve-fill",
                                     )
                                 }
                             }
@@ -2792,7 +2853,11 @@ object AutoVpnManager {
 
         val activeCheck = checkActiveProfile(verifyTrafficPath = true)
         if (!isSameStartedAutoProfile(profileId, mode)) return
-        val siteResults = checkSitesForValidation(profileId, mode)
+        val siteResults = if (shouldCheckSitesAfterTraffic(activeCheck, profileId, mode, "periodic")) {
+            checkSitesForValidation(profileId, mode)
+        } else {
+            emptyList()
+        }
         if (!isSameStartedAutoProfile(profileId, mode)) return
         if (siteResults == null) {
             DiagnosticLog.warn(
@@ -2895,7 +2960,11 @@ object AutoVpnManager {
                     outcome = "profile-or-mode-changed-during-traffic-check"
                     return@runOnDefaultDispatcher
                 }
-                val siteResults = checkSitesForValidation(profileId, mode)
+                val siteResults = if (shouldCheckSitesAfterTraffic(activeCheck, profileId, mode, "post-connect")) {
+                    checkSitesForValidation(profileId, mode)
+                } else {
+                    emptyList()
+                }
                 if (!isSameStartedAutoProfile(profileId, mode)) {
                     outcome = "profile-or-mode-changed-during-site-check"
                     return@runOnDefaultDispatcher
@@ -3040,16 +3109,6 @@ object AutoVpnManager {
             traffic = verifyRealTrafficPath(profileId, mode, "active-check")
         }
         var exitCountryRejected = false
-        if (requiresExitCountryCheck(mode)) {
-            val profile = SagerDatabase.proxyDao.getById(profileId) ?: return ActiveCheckResult(true)
-            if (hasExcludedGlobeMarker(profile)) {
-                AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.PERIODIC)
-                exitCountryRejected = true
-            } else if (!verifyActiveExitCountry(profile, mode, "active-check", AutoProfileScoreStore.Event.PERIODIC)) {
-                if (!isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
-                exitCountryRejected = true
-            }
-        }
 
         if (verifyTrafficPath || pingFailed) {
             if (traffic == null) {
@@ -3105,6 +3164,16 @@ object AutoVpnManager {
                     directNetworkAvailable = directNetworkAvailable,
                 )
             }
+            if (requiresExitCountryCheck(mode)) {
+                val profile = SagerDatabase.proxyDao.getById(profileId) ?: return ActiveCheckResult(true, ping)
+                if (hasExcludedGlobeMarker(profile)) {
+                    AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.PERIODIC)
+                    exitCountryRejected = true
+                } else if (!verifyActiveExitCountry(profile, mode, "active-check", AutoProfileScoreStore.Event.PERIODIC)) {
+                    if (!isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
+                    exitCountryRejected = true
+                }
+            }
             recordActiveTrafficSuccess(
                 profileId,
                 mode,
@@ -3136,6 +3205,16 @@ object AutoVpnManager {
                 trafficPathAvailable = traffic.hasTraffic,
                 downloadComplete = traffic.downloadUsable,
             )
+        }
+        if (requiresExitCountryCheck(mode)) {
+            val profile = SagerDatabase.proxyDao.getById(profileId) ?: return ActiveCheckResult(true, ping)
+            if (hasExcludedGlobeMarker(profile)) {
+                AutoProfileScoreStore.recordFailure(profile, mode, AutoProfileScoreStore.Event.PERIODIC)
+                exitCountryRejected = true
+            } else if (!verifyActiveExitCountry(profile, mode, "active-check", AutoProfileScoreStore.Event.PERIODIC)) {
+                if (!isSameStartedAutoProfile(profileId, mode)) return ActiveCheckResult(false)
+                exitCountryRejected = true
+            }
         }
         if (ping == null || exitCountryRejected) {
             if (!periodicRetry) {
@@ -5111,11 +5190,7 @@ object AutoVpnManager {
                     "progress=$autoFinished/$autoTotal working=$autoWorking"
         )
 
-        setAutoStatus(safeMode, R.string.auto_vpn_status_clearing_quarantine)
-        clearQuarantine()
-        DiagnosticLog.critical("auto-vpn", "cycle-quarantine-cleared mode=$safeMode")
-        delay(CYCLE_STATUS_VISIBLE_DELAY_MS)
-
+        prepareCycleVpnForSubscriptionUpdate(safeMode)
         AutoProfileScoreStore.flush()
         val subscriptions = SagerDatabase.groupDao.subscriptions()
         if (subscriptions.isNotEmpty()) {
@@ -5169,6 +5244,11 @@ object AutoVpnManager {
 
         if (!DataStore.autoVpnEnabled || DataStore.autoVpnMode != safeMode) return false
 
+        setAutoStatus(safeMode, R.string.auto_vpn_status_clearing_quarantine)
+        clearQuarantine()
+        DiagnosticLog.critical("auto-vpn", "cycle-quarantine-cleared mode=$safeMode")
+        delay(CYCLE_STATUS_VISIBLE_DELAY_MS)
+
         val nextProfiles = autoScanProfiles(enabledGroupIds())
         val nextTotal = nextProfiles.size
         synchronized(scannedIds) {
@@ -5182,6 +5262,68 @@ object AutoVpnManager {
         setAutoStatus(safeMode, R.string.auto_vpn_status_restart_scan)
         delay(AUTO_SCAN_NEXT_CYCLE_DELAY_MS)
         return true
+    }
+
+    private suspend fun prepareCycleVpnForSubscriptionUpdate(mode: Int) {
+        if (!isVpnRunningForAuto()) return
+        val safeMode = sanitizeMode(mode)
+        val profileId = DataStore.startedProfile
+        if (profileId <= 0L || !isSameStartedAutoProfile(profileId, safeMode)) return
+        setAutoStatus(safeMode, R.string.auto_vpn_status_cycle_checking_vpn)
+        val traffic = verifyRealTrafficPath(profileId, safeMode, "scan-cycle-boundary")
+        if (!isSameStartedAutoProfile(profileId, safeMode)) return
+        val downloadRequired = DataStore.autoVpnTrafficDownloadEnabled
+        val vpnHasInternet = traffic?.hasTraffic == true &&
+                (!downloadRequired || traffic.downloadUsable == true)
+        DiagnosticLog.critical(
+            "auto-vpn",
+            "cycle-vpn-connectivity profile=$profileId mode=$safeMode hasInternet=$vpnHasInternet " +
+                    "traffic=${traffic?.hasTraffic} download=${traffic?.downloadUsable} " +
+                    "downloadRequired=$downloadRequired",
+        )
+        if (vpnHasInternet) return
+
+        setAutoStatus(safeMode, R.string.auto_vpn_status_cycle_stopping_vpn)
+        cycleVpnPauseInProgress = true
+        pendingAutoServiceTransition = true
+        DataStore.autoVpnServiceStartRequested = false
+        try {
+            val stopRequested = onMainDispatcher {
+                if (isSameStartedAutoProfile(profileId, safeMode)) {
+                    SagerNet.stopService()
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!stopRequested) {
+                pendingAutoServiceTransition = false
+                DiagnosticLog.event(
+                    "auto-vpn",
+                    "cycle-vpn-stop-skipped mode=$safeMode reason=profile-changed-before-stop",
+                )
+                return
+            }
+            val stopped = withTimeoutOrNull(CYCLE_VPN_STOP_TIMEOUT_MS) {
+                while (isVpnRunningForAuto()) delay(100L)
+                true
+            } ?: false
+            DiagnosticLog.critical(
+                "auto-vpn",
+                "cycle-vpn-stop-result mode=$safeMode stopped=$stopped timeoutMs=$CYCLE_VPN_STOP_TIMEOUT_MS",
+            )
+            pendingAutoServiceTransition = false
+            if (stopped) delay(250L)
+        } catch (e: CancellationException) {
+            pendingAutoServiceTransition = false
+            throw e
+        } catch (e: Exception) {
+            pendingAutoServiceTransition = false
+            DiagnosticLog.error("auto-vpn", "cycle-vpn-stop-failed mode=$safeMode", e)
+            Logs.w(e)
+        } finally {
+            cycleVpnPauseInProgress = false
+        }
     }
 
     private fun stopScan(feedback: Boolean) {
@@ -5276,7 +5418,7 @@ object AutoVpnManager {
         notifyAutoStateChanged()
     }
 
-    private fun beginOnDemandSearchProgress(mode: Int, total: Int): Boolean {
+    private suspend fun beginOnDemandSearchProgress(mode: Int, total: Int): Boolean {
         // A direct search may continue a scan started in another process. Read the
         // persisted snapshot before claiming the progress panel, otherwise a switch
         // briefly replaces an already-running counter with 0/total.
@@ -5293,16 +5435,12 @@ object AutoVpnManager {
                 safeTotal > 0 &&
                 stored.finished >= safeTotal
         if (completedStoredCycle) {
-            synchronized(scannedIds) {
-                scannedIds.remove(safeMode)
-            }
-            clearStoredScannedIds(safeMode)
             DiagnosticLog.critical(
                 "auto-vpn",
-                "progress-on-demand-new-cycle mode=$safeMode total=$total finished=${stored!!.finished}"
+                "progress-on-demand-cycle-boundary mode=$safeMode total=$safeTotal finished=${stored!!.finished}; " +
+                        "running full cycle transition before counter reset",
             )
-            resetAutoProgressForNextCycle(safeMode, total)
-            return true
+            return restartAutoScanCycle(safeMode, safeTotal, testedAnyInCycle = false)
         }
         if (stored != null &&
             stored.total == safeTotal &&
