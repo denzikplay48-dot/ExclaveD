@@ -20,9 +20,11 @@
 package io.nekohasekai.sagernet.bg.test
 
 import android.net.Network
+import android.net.NetworkCapabilities
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.bg.GuardedProcessPool
 import io.nekohasekai.sagernet.bg.ActiveVpnTrafficProbe
 import io.nekohasekai.sagernet.bg.ExitIpGeoChecker
@@ -33,6 +35,7 @@ import io.nekohasekai.sagernet.fmt.buildV2RayConfig
 import io.nekohasekai.sagernet.ktx.Logs
 import io.nekohasekai.sagernet.ktx.mkPort
 import io.nekohasekai.sagernet.utils.DefaultNetworkListener
+import io.nekohasekai.sagernet.utils.DiagnosticLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -41,7 +44,47 @@ import libsagernetcore.Libsagernetcore
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.io.IOException
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+internal object TestProtectDiagnostics {
+    private const val SUMMARY_INTERVAL_MS = 30_000L
+
+    data class Snapshot(val calls: Long, val failures: Long)
+
+    @Volatile
+    private var activeInstances = 0
+    private val calls = AtomicLong(0L)
+    private val failures = AtomicLong(0L)
+    private var lastSummaryAt = 0L
+
+    @Synchronized
+    fun begin() {
+        activeInstances++
+    }
+
+    fun record(success: Boolean) {
+        if (activeInstances == 0) return
+        calls.incrementAndGet()
+        if (!success) failures.incrementAndGet()
+    }
+
+    @Synchronized
+    fun finish(): Snapshot? {
+        if (activeInstances == 0) return null
+        activeInstances--
+        if (activeInstances != 0) return null
+
+        val now = System.currentTimeMillis()
+        if (lastSummaryAt != 0L && now - lastSummaryAt < SUMMARY_INTERVAL_MS) return null
+        lastSummaryAt = now
+        return Snapshot(calls.get(), failures.get()).also {
+            calls.set(0L)
+            failures.set(0L)
+        }
+    }
+}
 
 class V2RayTestInstance(
     profile: ProxyEntity,
@@ -52,7 +95,13 @@ class V2RayTestInstance(
 ) : V2RayInstance(
     profile,
 ), LocalResolver {
+    companion object {
+        private const val ROUTE_DIAGNOSTIC_INTERVAL_MS = 30_000L
+        private val lastRouteDiagnosticAt = AtomicLong(0L)
+    }
+
     private val closeStarted = AtomicBoolean(false)
+    private val protectMonitoringStarted = AtomicBoolean(false)
     private var httpProxyPort: Int? = null
 
     suspend fun doTest(): Int = withContext(Dispatchers.IO) {
@@ -100,11 +149,41 @@ class V2RayTestInstance(
 
     override suspend fun init() {
         super.init()
+        if (protectMonitoringStarted.compareAndSet(false, true)) {
+            TestProtectDiagnostics.begin()
+        }
         v2rayPoint.withProtect(protectPath)
         v2rayPoint.withLocalResolver(this)
         DefaultNetworkListener.start(this) {
             underlyingNetwork = it
+            if (it != null) logRouteDiagnostics(it)
         }
+    }
+
+    private fun logRouteDiagnostics(network: Network) {
+        val now = System.currentTimeMillis()
+        while (true) {
+            val previous = lastRouteDiagnosticAt.get()
+            if (now - previous < ROUTE_DIAGNOSTIC_INTERVAL_MS) return
+            if (lastRouteDiagnosticAt.compareAndSet(previous, now)) break
+        }
+
+        val capabilities = runCatching {
+            SagerNet.connectivity.getNetworkCapabilities(network)
+        }.getOrNull()
+        val route = when {
+            capabilities == null -> "unknown"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) -> "non-vpn"
+            else -> "other"
+        }
+        val socketExists = protectPath.isNotEmpty() && File(protectPath).exists()
+        DiagnosticLog.event(
+            "profile-test-route",
+            "test-route-state protectPathConfigured=${protectPath.isNotEmpty()} protectSocketExists=$socketExists " +
+                    "resolverNetwork=$route wifi=${capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)} " +
+                    "cellular=${capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)}"
+        )
     }
 
     override fun close() {
@@ -132,7 +211,18 @@ class V2RayTestInstance(
         }.onFailure {
             Logs.w(it)
         }
-        super.close()
+        try {
+            super.close()
+        } finally {
+            if (protectMonitoringStarted.compareAndSet(true, false)) {
+                TestProtectDiagnostics.finish()?.let { snapshot ->
+                    DiagnosticLog.event(
+                        "profile-test-route",
+                        "vpn-protect-window calls=${snapshot.calls} failures=${snapshot.failures}"
+                    )
+                }
+            }
+        }
     }
 
     override fun buildConfig() {

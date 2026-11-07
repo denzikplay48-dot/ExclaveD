@@ -1224,26 +1224,32 @@ class ProfileTestWorker(
                                     val startedAt = System.currentTimeMillis()
                                     try {
                                         ProfileTestRunner.markProfileTestStarted(profile.id)
+                                        val systemTun = DataStore.tunImplementation == TunImplementation.SYSTEM
+                                        val vpnServiceMode = DataStore.serviceMode == Key.MODE_VPN
+                                        val vpnServiceStarted = SagerNet.started
+                                        val activeVpnProfile = DataStore.startedProfile > 0L
+                                        val protectPath = if (
+                                            systemTun && vpnServiceMode && vpnServiceStarted && activeVpnProfile
+                                        ) {
+                                            SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path"
+                                        } else {
+                                            ""
+                                        }
                                         DiagnosticLog.critical(
                                             "profile-test-worker",
                                             "profile-test-start runId=$workerRunId worker=$workerIndex " +
+                                                    "systemTun=$systemTun vpnServiceMode=$vpnServiceMode " +
+                                                    "vpnServiceStarted=$vpnServiceStarted " +
+                                                    "activeVpnProfile=$activeVpnProfile " +
+                                                    "protectPathConfigured=${protectPath.isNotEmpty()} " +
                                                     ProfileTestRunner.profileDiagnosticSummary(profile)
                                         )
-                                        val instance = if (
-                                            DataStore.tunImplementation == TunImplementation.SYSTEM &&
-                                            DataStore.serviceMode == Key.MODE_VPN &&
-                                            SagerNet.started &&
-                                            DataStore.startedProfile > 0
-                                        ) {
-                                            V2RayTestInstance(
-                                                profile,
-                                                link,
-                                                timeout,
-                                                protectPath = SagerNet.deviceStorage.noBackupFilesDir.toString() + "/protect_path"
-                                            )
-                                        } else {
-                                            V2RayTestInstance(profile, link, timeout)
-                                        }
+                                        val instance = V2RayTestInstance(
+                                            profile,
+                                            link,
+                                            timeout,
+                                            protectPath = protectPath,
+                                        )
                                         activeInstances.add(instance)
                                         try {
                                             val testedPing = instance.doTest()
