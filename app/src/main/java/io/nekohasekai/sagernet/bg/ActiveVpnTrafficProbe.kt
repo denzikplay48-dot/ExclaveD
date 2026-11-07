@@ -36,9 +36,13 @@ internal object ActiveVpnTrafficProbe {
     data class Result(
         val endpoints: List<EndpointResult>,
         val download: DownloadResult,
+        val downloadConfirmed: Boolean? = null,
     ) {
         val hasTraffic: Boolean
-            get() = endpoints.any { it.success } || download.downloadedBytes > 0L
+            get() = endpoints.any { it.success } || download.downloadedBytes > 0L || downloadConfirmed == true
+
+        val downloadUsable: Boolean?
+            get() = if (download.expectedBytes == 0L) null else downloadConfirmed ?: download.complete
 
         val latencyMillis: Int?
             get() = endpoints.asSequence()
@@ -64,6 +68,10 @@ internal object ActiveVpnTrafficProbe {
             endpoints = urls.values.map { checkEndpoint(it, proxy, CONNECT_TIMEOUT_MS) },
             download = if (downloadEnabled) checkDownload(proxy) else skippedDownload(),
         )
+    }
+
+    suspend fun repeatDownload(proxy: Proxy): DownloadResult = withContext(Dispatchers.IO) {
+        checkDownload(proxy)
     }
 
     fun checkHttp204(value: String, proxy: Proxy, timeoutMillis: Int): EndpointResult =

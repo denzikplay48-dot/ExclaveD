@@ -38,7 +38,10 @@ internal object GeminiRenderedPageProbe {
             "isn't available in your country",'not supported in your region',
             'not available in your region','не поддерживается в вашей стране',
             'недоступен в вашей стране','недоступна в вашей стране'];
-        var challenge=['unusual traffic','automated queries','our systems have detected','not a robot'];
+        var challenge=['unusual traffic','automated queries','our systems have detected','not a robot',
+            'мы зарегистрировали подозрительный трафик',
+            'подозрительный трафик, исходящий из вашей сети','автоматические запросы',
+            'подтвердите, что вы не робот'];
         return JSON.stringify({url:location.href,
             region:region.some(function(marker){return text.indexOf(marker)>=0;}),
             challenge:challenge.some(function(marker){return text.indexOf(marker)>=0;})});
@@ -117,8 +120,7 @@ internal object GeminiRenderedPageProbe {
             )
         }
 
-        fun isConclusive(state: ServiceAvailabilityProbe.State): Boolean = when (state) {
-            ServiceAvailabilityProbe.State.AVAILABLE,
+        fun isDefinitiveFailure(state: ServiceAvailabilityProbe.State): Boolean = when (state) {
             ServiceAvailabilityProbe.State.UNAVAILABLE,
             ServiceAvailabilityProbe.State.RESTRICTED,
             ServiceAvailabilityProbe.State.CHALLENGE,
@@ -157,7 +159,7 @@ internal object GeminiRenderedPageProbe {
                     if (snapshot.optBoolean("challenge")) append("unusual traffic ")
                 }
                 val classification = classify(lastUrl, effectiveCode(), markerText)
-                if (isConclusive(classification.state)) {
+                if (isDefinitiveFailure(classification.state)) {
                     finish(classification.state, classification.reason)
                     return
                 }
@@ -178,7 +180,9 @@ internal object GeminiRenderedPageProbe {
         domSettleTimeout = Runnable {
             if (completed) return@Runnable
             val classification = classify(lastUrl, effectiveCode())
-            if (isConclusive(classification.state)) {
+            if (isDefinitiveFailure(classification.state)) {
+                finish(classification.state, classification.reason)
+            } else if (domSnapshotRead && classification.state == ServiceAvailabilityProbe.State.PAGE_REACHABLE) {
                 finish(classification.state, classification.reason)
             } else {
                 finish(
@@ -191,7 +195,7 @@ internal object GeminiRenderedPageProbe {
         timeout = Runnable {
             if (completed) return@Runnable
             val classification = classify(lastUrl, effectiveCode())
-            if (isConclusive(classification.state)) {
+            if (isDefinitiveFailure(classification.state)) {
                 finish(classification.state, classification.reason)
             } else {
                 finish(
@@ -251,14 +255,14 @@ internal object GeminiRenderedPageProbe {
                     handler.removeCallbacks(pollDom)
                     handler.removeCallbacks(domSettleTimeout)
                     val classification = classify(url, 0)
-                    if (isConclusive(classification.state)) finish(classification.state, classification.reason)
+                    if (isDefinitiveFailure(classification.state)) finish(classification.state, classification.reason)
                 }
 
                 override fun onPageCommitVisible(view: WebView, url: String) {
                     lastUrl = url
                     pageCommittedAt = SystemClock.elapsedRealtime()
                     val classification = classify(url, effectiveCode())
-                    if (isConclusive(classification.state)) {
+                    if (isDefinitiveFailure(classification.state)) {
                         finish(classification.state, classification.reason)
                     } else {
                         startDomInspection()
@@ -270,7 +274,7 @@ internal object GeminiRenderedPageProbe {
                     if (pageFinishedAt == 0L) pageFinishedAt = SystemClock.elapsedRealtime()
                     scheduleDomSettleTimeout()
                     val classification = classify(url, effectiveCode())
-                    if (isConclusive(classification.state)) {
+                    if (isDefinitiveFailure(classification.state)) {
                         finish(classification.state, classification.reason)
                     } else {
                         startDomInspection()
@@ -286,7 +290,7 @@ internal object GeminiRenderedPageProbe {
                         lastUrl = request.url.toString()
                         mainFrameStatus = errorResponse.statusCode
                         val classification = classify(lastUrl, errorResponse.statusCode)
-                        if (isConclusive(classification.state)) {
+                        if (isDefinitiveFailure(classification.state)) {
                             finish(classification.state, classification.reason)
                         }
                     }
